@@ -5,7 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "ToS command-line interface (scaffold)"
+description = "ToS command-line interface"
+
+[lib]
+name = "tos_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "tos"
@@ -14,7 +18,16 @@ path = "src/main.rs"
 [dependencies]
 tos-core = { path = "../tos-core" }
 tos-crypto = { path = "../tos-crypto" }
+tos-wire = { path = "../tos-wire" }
+tos-proto = { path = "../tos-proto" }
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"

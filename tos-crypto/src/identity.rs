@@ -88,6 +88,20 @@ impl Identity {
         }
     }
 
+    pub fn from_signing_key(signing_key: SigningKey) -> Self {
+        let node_id = compute_node_id(&signing_key);
+        Self {
+            signing_key,
+            node_id,
+            path: None,
+            created_at: SystemTime::now(),
+        }
+    }
+
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
+
     pub async fn load_or_create(path: impl AsRef<Path>) -> CryptoResult<Self> {
         let path = path.as_ref().to_path_buf();
         if path.exists() {

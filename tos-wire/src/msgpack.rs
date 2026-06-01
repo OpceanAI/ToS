@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{WireError, WireResult};
 
-pub fn encode<T: Serialize>(value: &T) -> WireResult<Vec<u8>> {
+pub fn encode<T: Serialize + ?Sized>(value: &T) -> WireResult<Vec<u8>> {
     rmp_serde::to_vec(value).map_err(|e| WireError::MsgpackEncode(e.to_string()))
 }
 

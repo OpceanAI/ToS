@@ -7,7 +7,7 @@ pub const MAX_RECORDS_PER_BATCH: u32 = u32::MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchHeader {
-    pub schema_hash: [u8; 8],
+    pub schema_hash: [u8; 32],
     pub batch_id: u32,
     pub record_count: u32,
     pub format: u8,
@@ -17,7 +17,7 @@ pub struct BatchHeader {
 impl Default for BatchHeader {
     fn default() -> Self {
         Self {
-            schema_hash: [0u8; 8],
+            schema_hash: [0u8; 32],
             batch_id: 0,
             record_count: 0,
             format: FORMAT_MSGPACK,
@@ -27,6 +27,16 @@ impl Default for BatchHeader {
 }
 
 impl BatchHeader {
+    pub fn with(schema_hash: [u8; 32], batch_id: u32, count: u32, format: u8) -> Self {
+        Self {
+            schema_hash,
+            batch_id,
+            record_count: count,
+            format,
+            flags: [0u8; 3],
+        }
+    }
+
     pub fn to_bytes(&self) -> WireResult<[u8; BATCH_HEADER_SIZE]> {
         let bytes = bincode::serialize(self)?;
         if bytes.len() != BATCH_HEADER_SIZE {
@@ -64,6 +74,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn header_size_is_44() {
+        assert_eq!(BATCH_HEADER_SIZE, 44);
+    }
+
+    #[test]
     fn header_default_roundtrip() {
         let h = BatchHeader::default();
         let bytes = h.to_bytes().unwrap();
@@ -75,7 +90,7 @@ mod tests {
     #[test]
     fn header_custom_values() {
         let h = BatchHeader {
-            schema_hash: [0xab; 8],
+            schema_hash: [0xab; 32],
             batch_id: 42,
             record_count: 1000,
             format: FORMAT_MSGPACK,
@@ -84,6 +99,16 @@ mod tests {
         let bytes = h.to_bytes().unwrap();
         let h2 = BatchHeader::from_bytes(&bytes).unwrap();
         assert_eq!(h, h2);
+    }
+
+    #[test]
+    fn header_with_constructor() {
+        let h = BatchHeader::with([0xab; 32], 7, 50, FORMAT_MSGPACK);
+        assert_eq!(h.schema_hash, [0xab; 32]);
+        assert_eq!(h.batch_id, 7);
+        assert_eq!(h.record_count, 50);
+        assert_eq!(h.format, FORMAT_MSGPACK);
+        assert_eq!(h.flags, [0, 0, 0]);
     }
 
     #[test]

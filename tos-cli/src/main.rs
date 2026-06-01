@@ -1,5 +1,10 @@
+mod cmd;
+mod uri;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+use crate::cmd::push_mock;
 
 #[derive(Parser, Debug)]
 #[command(name = "tos", version, about = "Translation of Service: P2P data sync")]
@@ -66,15 +71,26 @@ enum NodeAction {
     Id,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     let cli = Cli::parse();
 
     match cli.command {
         Command::Push { from, to, table } => {
-            eprintln!("[scaffold] tos push --from {from} --to {to} --table {table:?}");
-            eprintln!("[scaffold] real implementation in S3");
-            Ok(())
+            match push_mock(&from, &to, table.as_deref()).await {
+                Ok(stats) => {
+                    println!(
+                        "pushed {} records ({} batches, {} bytes) in {}ms",
+                        stats.total_records,
+                        stats.total_batches,
+                        stats.bytes_sent,
+                        stats.duration_ms
+                    );
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         }
         Command::Sync { from, to, table, watch } => {
             eprintln!("[scaffold] tos sync --from {from} --to {to:?} --table {table:?} --watch {watch}");

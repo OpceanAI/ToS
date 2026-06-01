@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use tos_crypto::Identity;
+
 use crate::messages::StreamEnd;
 
 #[derive(Debug, Clone, Default)]
@@ -10,14 +14,19 @@ pub struct SessionStats {
 }
 
 pub struct Session {
+    pub identity: Arc<Identity>,
     pub session_id: [u8; 32],
+    pub batch_size: u32,
     pub stats: SessionStats,
 }
 
 impl Session {
-    pub fn new(session_id: [u8; 32]) -> Self {
+    pub fn new(identity: Arc<Identity>, batch_size: u32) -> Self {
+        let session_id = *identity.node_id().as_bytes();
         Self {
+            identity,
             session_id,
+            batch_size,
             stats: SessionStats::default(),
         }
     }
@@ -43,17 +52,23 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
+
+    fn make_id() -> Arc<Identity> {
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        Arc::new(Identity::from_signing_key(key))
+    }
 
     #[test]
     fn session_stats_default() {
-        let s = Session::new([0u8; 32]);
+        let s = Session::new(make_id(), 100);
         assert_eq!(s.stats.total_records, 0);
         assert_eq!(s.stats.total_batches, 0);
     }
 
     #[test]
     fn session_tracks_batches() {
-        let mut s = Session::new([0u8; 32]);
+        let mut s = Session::new(make_id(), 100);
         s.record_batch_sent(1024);
         s.record_batch_sent(2048);
         s.record_batch_received(512);
@@ -64,12 +79,17 @@ mod tests {
 
     #[test]
     fn end_stream_message_has_session_id() {
-        let mut sid = [0u8; 32];
-        sid[0] = 0xab;
-        let s = Session::new(sid);
+        let s = Session::new(make_id(), 100);
         let end = s.end_stream(100, 500);
-        assert_eq!(end.session_id, sid);
+        assert_eq!(end.session_id, s.session_id);
         assert_eq!(end.total_records, 100);
         assert_eq!(end.duration_ms, 500);
+    }
+
+    #[test]
+    fn session_id_equals_node_id() {
+        let id = make_id();
+        let s = Session::new(id.clone(), 100);
+        assert_eq!(s.session_id, *id.node_id().as_bytes());
     }
 }

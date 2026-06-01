@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::types::TosType;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TosField {
     pub name: String,
     pub ty: TosType,
@@ -14,7 +16,8 @@ pub struct TosField {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum DefaultValue {
     Bool(bool),
     Int(i64),
@@ -35,26 +38,27 @@ impl DefaultValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldIndex {
     pub order: i32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TosIndex {
     pub name: String,
     pub fields: Vec<String>,
     pub unique: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     HasMany,
     HasOne,
     BelongsTo,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TosRelation {
     pub name: String,
     pub kind: RelationKind,
@@ -62,7 +66,7 @@ pub struct TosRelation {
     pub foreign_key: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TosTable {
     pub name: String,
     pub fields: Vec<TosField>,
@@ -70,7 +74,7 @@ pub struct TosTable {
     pub relations: BTreeMap<String, TosRelation>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TosSchema {
     pub name: String,
     pub version: String,

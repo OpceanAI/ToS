@@ -8,10 +8,19 @@ authors.workspace = true
 description = "ToS P2P protocol: handshake, stream, watch, topology"
 
 [dependencies]
+tos-core = { path = "../tos-core" }
+tos-crypto = { path = "../tos-crypto" }
+tos-wire = { path = "../tos-wire" }
+ed25519-dalek = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 bincode = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+serde_json = { workspace = true }

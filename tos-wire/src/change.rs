@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
+use tos_core::adapter::TosValue;
 
-use crate::error::{WireError, WireResult};
 use crate::batch::BatchHeader;
+use crate::error::{WireError, WireResult};
+use crate::msgpack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeOp {
@@ -53,6 +55,21 @@ pub fn split_header_body(buf: &[u8]) -> WireResult<(BatchHeader, &[u8])> {
     Ok((header, &buf[BATCH_HEADER_SIZE..]))
 }
 
+pub fn join_header_body(header: &BatchHeader, body: &[u8]) -> WireResult<Vec<u8>> {
+    let mut out = Vec::with_capacity(crate::BATCH_HEADER_SIZE + body.len());
+    out.extend_from_slice(&header.to_bytes()?);
+    out.extend_from_slice(body);
+    Ok(out)
+}
+
+pub fn encode_records(records: &[TosValue]) -> WireResult<Vec<u8>> {
+    msgpack::encode(records)
+}
+
+pub fn decode_records(bytes: &[u8]) -> WireResult<Vec<TosValue>> {
+    msgpack::decode(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +107,21 @@ mod tests {
         let (parsed_h, rest) = split_header_body(&full).unwrap();
         assert_eq!(parsed_h, h);
         assert_eq!(rest.len(), 10);
+    }
+
+    #[test]
+    fn join_header_body_correct() {
+        let h = BatchHeader::default();
+        let body = vec![1, 2, 3, 4, 5];
+        let full = join_header_body(&h, &body).unwrap();
+        let (parsed_h, parsed_body) = split_header_body(&full).unwrap();
+        assert_eq!(parsed_h, h);
+        assert_eq!(parsed_body, body.as_slice());
+    }
+
+    #[test]
+    fn split_header_body_too_short() {
+        let result = split_header_body(&[0u8; 10]);
+        assert!(result.is_err());
     }
 }
