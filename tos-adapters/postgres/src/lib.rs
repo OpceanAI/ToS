@@ -235,18 +235,41 @@ impl TosAdapter for PostgresAdapter {
 
     async fn write_records(
         &self,
-        _table: &str,
-        _records: RecordStream,
+        table: &str,
+        mut records: RecordStream,
     ) -> Result<u64, BoxedError> {
-        Err(PgAdapterError::Adapter(
-            "postgres write is available in S4 (v0.5)".into(),
-        )
-        .into())
+        let table_obj = self.introspect_table(table).await?;
+        let cols: Vec<String> = table_obj.fields.iter().map(|f| f.name.clone()).collect();
+        if cols.is_empty() {
+            return Ok(0);
+        }
+        let mut count = 0u64;
+        let mut tx = self.pool.begin().await?;
+        while let Some(item) = records.try_next().await? {
+            let obj = match &item.0 {
+                serde_json::Value::Object(map) => map,
+                other => {
+                    return Err(PgAdapterError::Adapter(format!(
+                        "write_records: expected JSON object, got {other}"
+                    ))
+                    .into());
+                }
+            };
+            let sql = build_insert_sql(table, &cols);
+            let mut query = sqlx::query(&sql);
+            for c in &cols {
+                query = bind_json_value(query, obj.get(c).cloned());
+            }
+            query.execute(&mut *tx).await?;
+            count += 1;
+        }
+        tx.commit().await?;
+        Ok(count)
     }
 
     async fn watch(&self, _table: &str) -> Result<ChangeStream, BoxedError> {
         Err(PgAdapterError::Adapter(
-            "postgres watch is available in S4 (v0.5)".into(),
+            "postgres watch is available in S5 with pgoutput / LISTEN-NOTIFY".into(),
         )
         .into())
     }
@@ -259,6 +282,46 @@ impl TosAdapter for PostgresAdapter {
 
 pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+pub fn build_insert_sql(table: &str, cols: &[String]) -> String {
+    let col_list = cols
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let placeholders = (1..=cols.len())
+        .map(|i| format!("${i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        quote_ident(table),
+        col_list,
+        placeholders
+    )
+}
+
+pub fn bind_json_value<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    value: Option<serde_json::Value>,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    use serde_json::Value;
+    match value {
+        None | Some(Value::Null) => query.bind(Option::<String>::None),
+        Some(Value::Bool(b)) => query.bind(b),
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                query.bind(i)
+            } else if let Some(f) = n.as_f64() {
+                query.bind(f)
+            } else {
+                query.bind(n.to_string())
+            }
+        }
+        Some(Value::String(s)) => query.bind(s),
+        Some(Value::Array(_) | Value::Object(_)) => query.bind(value.unwrap()),
+    }
 }
 
 #[cfg(test)]
@@ -428,5 +491,35 @@ mod tests {
     fn quote_ident_basic() {
         assert_eq!(quote_ident("users"), "\"users\"");
         assert_eq!(quote_ident("weird\"name"), "\"weird\"\"name\"");
+    }
+
+    #[test]
+    fn build_insert_sql_single_col() {
+        let s = build_insert_sql("users", &["id".to_string()]);
+        assert_eq!(s, "INSERT INTO \"users\" (\"id\") VALUES ($1)");
+    }
+
+    #[test]
+    fn build_insert_sql_multi_col() {
+        let s = build_insert_sql("users", &["id".into(), "name".into(), "score".into()]);
+        assert_eq!(
+            s,
+            "INSERT INTO \"users\" (\"id\", \"name\", \"score\") VALUES ($1, $2, $3)"
+        );
+    }
+
+    #[test]
+    fn build_insert_sql_quotes_special_idents() {
+        let s = build_insert_sql("weird name", &["col\"x".into()]);
+        assert_eq!(
+            s,
+            "INSERT INTO \"weird name\" (\"col\"\"x\") VALUES ($1)"
+        );
+    }
+
+    #[test]
+    fn build_insert_sql_empty_cols_returns_invalid() {
+        let s = build_insert_sql("x", &[]);
+        assert_eq!(s, "INSERT INTO \"x\" () VALUES ()");
     }
 }

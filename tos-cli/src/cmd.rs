@@ -76,12 +76,34 @@ pub async fn build_postgres_adapter(
     Ok(Arc::new(adapter))
 }
 
+pub async fn build_redis_adapter(
+    uri: &Uri,
+    role: &str,
+) -> Result<Arc<tos_adapter_redis::RedisAdapter>> {
+    use tos_adapter_redis::RedisAdapter;
+    if uri.scheme != Scheme::Redis {
+        return Err(anyhow!(
+            "internal: build_redis_adapter called with scheme `{}`",
+            uri.scheme.as_str()
+        ));
+    }
+    let url = format!("redis://{}", uri.dataset);
+    let adapter = RedisAdapter::connect(&url)
+        .await
+        .with_context(|| format!("connecting to {url}"))?;
+    let _ = role;
+    Ok(Arc::new(adapter))
+}
+
 pub async fn build_adapter(uri: &Uri, role: &str) -> Result<Arc<dyn TosAdapter>> {
     match &uri.scheme {
         Scheme::Mock => Ok(build_mock_adapter(uri, role)? as Arc<dyn TosAdapter>),
         Scheme::Json => Ok(build_json_adapter(uri, role)? as Arc<dyn TosAdapter>),
         Scheme::Postgres => {
             Ok(build_postgres_adapter(uri, role).await? as Arc<dyn TosAdapter>)
+        }
+        Scheme::Redis => {
+            Ok(build_redis_adapter(uri, role).await? as Arc<dyn TosAdapter>)
         }
         other => Err(anyhow!(
             "scheme `{}` not supported in v0.1 ({} side)",
@@ -154,16 +176,12 @@ pub fn schema_for_dataset(name: &str) -> TosSchema {
     s
 }
 
-pub async fn push(from_uri: &str, to_uri: &str, table: Option<&str>) -> Result<RunStats> {
-    let from = parse(from_uri).context("parsing --from")?;
-    let to = parse(to_uri).context("parsing --to")?;
-    let src = build_adapter(&from, "source").await?;
-    let dst = build_adapter(&to, "dest").await?;
-    let table_name = table
-        .map(|s| s.to_string())
-        .or_else(|| from.params.get("table").cloned())
-        .unwrap_or_else(|| "rows".to_string());
-
+pub async fn push_one(
+    src: Arc<dyn TosAdapter>,
+    dst: Arc<dyn TosAdapter>,
+    table: &str,
+    batch_size: u32,
+) -> Result<RunStats> {
     let listener = TcpTransport::bind("127.0.0.1:0")
         .await
         .context("binding local listener")?;
@@ -173,7 +191,6 @@ pub async fn push(from_uri: &str, to_uri: &str, table: Option<&str>) -> Result<R
 
     let id_server = Arc::new(Identity::generate());
     let id_client = Arc::new(Identity::generate());
-    let batch_size = param_u64(&from, "batch", 100) as u32;
 
     let server_runner = SessionRunner::new(id_server.clone(), batch_size);
     let dst_for_server = dst.clone();
@@ -184,10 +201,10 @@ pub async fn push(from_uri: &str, to_uri: &str, table: Option<&str>) -> Result<R
     let client_runner = SessionRunner::new(id_client.clone(), batch_size);
     let src_for_client = src.clone();
     let dst_for_client = dst.clone();
-    let table_name_for_client = table_name.clone();
+    let table_for_client = table.to_string();
     let client = tokio::spawn(async move {
         client_runner
-            .run_client(addr, src_for_client, dst_for_client, &table_name_for_client)
+            .run_client(addr, src_for_client, dst_for_client, &table_for_client)
             .await
     });
 
@@ -200,6 +217,63 @@ pub async fn push(from_uri: &str, to_uri: &str, table: Option<&str>) -> Result<R
         .context("client run failed")?;
 
     Ok(client_stats)
+}
+
+pub async fn push(from_uri: &str, to_uri: &str, table: Option<&str>) -> Result<RunStats> {
+    let from = parse(from_uri).context("parsing --from")?;
+    let to = parse(to_uri).context("parsing --to")?;
+    let src = build_adapter(&from, "source").await?;
+    let dst = build_adapter(&to, "dest").await?;
+    let table_name = table
+        .map(|s| s.to_string())
+        .or_else(|| from.params.get("table").cloned())
+        .unwrap_or_else(|| "rows".to_string());
+    let batch_size = param_u64(&from, "batch", 100) as u32;
+    push_one(src, dst, &table_name, batch_size).await
+}
+
+pub async fn sync(
+    from_uri: &str,
+    to_uris: &[String],
+    table: Option<&str>,
+    watch: bool,
+    interval_secs: u64,
+) -> Result<Vec<RunStats>> {
+    if to_uris.is_empty() {
+        return Err(anyhow!("sync requires at least one --to destination"));
+    }
+    let from = parse(from_uri).context("parsing --from")?;
+    let src = build_adapter(&from, "source").await?;
+    let mut dsts = Vec::new();
+    for to_uri in to_uris {
+        let to = parse(to_uri).context(format!("parsing --to {to_uri}"))?;
+        let dst = build_adapter(&to, "dest").await?;
+        dsts.push((to_uri.clone(), dst));
+    }
+    let table_name = table
+        .map(|s| s.to_string())
+        .or_else(|| from.params.get("table").cloned())
+        .unwrap_or_else(|| "rows".to_string());
+    let batch_size = param_u64(&from, "batch", 100) as u32;
+
+    let mut all_stats = Vec::new();
+    if watch {
+        loop {
+            for (uri, dst) in &dsts {
+                let s = push_one(src.clone(), dst.clone(), &table_name, batch_size).await
+                    .with_context(|| format!("sync iteration to {uri}"))?;
+                all_stats.push(s);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+        }
+    } else {
+        for (uri, dst) in &dsts {
+            let s = push_one(src.clone(), dst.clone(), &table_name, batch_size).await
+                .with_context(|| format!("sync to {uri}"))?;
+            all_stats.push(s);
+        }
+    }
+    Ok(all_stats)
 }
 
 #[cfg(test)]
@@ -293,5 +367,28 @@ mod tests {
         let err = res.err().unwrap();
         let msg = format!("{err:?}");
         assert!(msg.contains("mysql"), "error should mention scheme: {msg}");
+    }
+
+    #[tokio::test]
+    async fn sync_to_empty_list_errors() {
+        let res = sync("mock://a?records=1", &[], None, false, 1).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn sync_to_two_mock_destinations() {
+        let res = sync(
+            "mock://demo?records=5",
+            &["mock://out1".to_string(), "mock://out2".to_string()],
+            None,
+            false,
+            1,
+        )
+        .await;
+        let stats = res.expect("sync should succeed");
+        assert_eq!(stats.len(), 2);
+        for s in &stats {
+            assert_eq!(s.total_records, 5);
+        }
     }
 }

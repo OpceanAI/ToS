@@ -192,3 +192,49 @@ fn cli_push_json_to_mock_succeeds() {
     assert!(stdout.contains("pushed 4 records"), "got: {stdout}");
     cleanup(&src);
 }
+
+#[test]
+fn cli_sync_fanout_mock_to_two_json() {
+    let dst1 = temp_path("sync-fanout-1");
+    let dst2 = temp_path("sync-fanout-2");
+    cleanup(&dst1);
+    cleanup(&dst2);
+    let res = tos()
+        .args([
+            "sync",
+            "--from",
+            "mock://demo?records=5&batch=10",
+            "--to",
+            &format!("json://{}", dst1.to_string_lossy()),
+            "--to",
+            &format!("json://{}", dst2.to_string_lossy()),
+        ])
+        .output()
+        .expect("run tos sync");
+    assert!(
+        res.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&res.stdout),
+        String::from_utf8_lossy(&res.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&res.stdout);
+    assert!(stdout.contains("[0]"), "should show [0] for first dest: {stdout}");
+    assert!(stdout.contains("[1]"), "should show [1] for second dest: {stdout}");
+    let raw1 = std::fs::read_to_string(&dst1).unwrap();
+    let raw2 = std::fs::read_to_string(&dst2).unwrap();
+    let arr1: serde_json::Value = serde_json::from_str(&raw1).unwrap();
+    let arr2: serde_json::Value = serde_json::from_str(&raw2).unwrap();
+    assert_eq!(arr1.as_array().unwrap().len(), 5);
+    assert_eq!(arr2.as_array().unwrap().len(), 5);
+    cleanup(&dst1);
+    cleanup(&dst2);
+}
+
+#[test]
+fn cli_sync_empty_to_list_errors() {
+    let res = tos()
+        .args(["sync", "--from", "mock://a?records=1"])
+        .output()
+        .expect("run tos sync");
+    assert!(!res.status.success());
+}

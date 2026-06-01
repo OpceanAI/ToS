@@ -4,7 +4,7 @@ mod uri;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::cmd::push;
+use crate::cmd::{push, sync};
 
 #[derive(Parser, Debug)]
 #[command(name = "tos", version, about = "Translation of Service: P2P data sync")]
@@ -32,6 +32,8 @@ enum Command {
         table: Option<String>,
         #[arg(long, default_value_t = false)]
         watch: bool,
+        #[arg(long, default_value_t = 5)]
+        interval: u64,
     },
     Schema {
         #[command(subcommand)]
@@ -92,10 +94,19 @@ async fn main() -> Result<()> {
                 Err(e) => Err(e),
             }
         }
-        Command::Sync { from, to, table, watch } => {
-            eprintln!("[scaffold] tos sync --from {from} --to {to:?} --table {table:?} --watch {watch}");
-            eprintln!("[scaffold] real implementation in S4");
-            Ok(())
+        Command::Sync { from, to, table, watch, interval } => {
+            match sync(&from, &to, table.as_deref(), watch, interval).await {
+                Ok(stats) => {
+                    for (i, s) in stats.iter().enumerate() {
+                        println!(
+                            "[{i}] pushed {} records ({} batches, {} bytes) in {}ms",
+                            s.total_records, s.total_batches, s.bytes_sent, s.duration_ms
+                        );
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         }
         Command::Schema { action } => {
             eprintln!("[scaffold] tos schema {action:?}");

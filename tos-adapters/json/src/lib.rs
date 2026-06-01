@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use serde_json::{Map, Value};
 use thiserror::Error;
-use tos_core::adapter::{BoxedError, ChangeStream, RecordStream, TosAdapter, TosValue};
+use tos_core::adapter::{BoxedError, ChangeEvent, ChangeOp, ChangeStream, RecordStream, TosAdapter, TosValue};
 use tos_core::sdl::{TosField, TosSchema, TosTable};
 use tos_core::types::{PrimitiveType, TosType};
 
@@ -230,11 +231,73 @@ impl TosAdapter for JsonAdapter {
         Ok(count)
     }
 
-    async fn watch(&self, _table: &str) -> Result<ChangeStream, BoxedError> {
-        Err(JsonAdapterError::Adapter(
-            "json watch is available in S4 (v0.5)".into(),
-        )
-        .into())
+    async fn watch(&self, table: &str) -> Result<ChangeStream, BoxedError> {
+        let path = self.path.clone();
+        let initial_snapshot = self.records();
+        let table_name = table.to_string();
+        let stream = async_stream::try_stream! {
+            let mut seen: std::collections::HashMap<String, TosValue> = std::collections::HashMap::new();
+            for (i, v) in initial_snapshot.into_iter().enumerate() {
+                seen.insert(format!("row-{i}"), v);
+            }
+            let mut last_mtime = mtime_of(&path);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let current_mtime = mtime_of(&path);
+                if current_mtime == last_mtime {
+                    continue;
+                }
+                last_mtime = current_mtime;
+                let raw = match std::fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let parsed: Value = match serde_json::from_str(&raw) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let arr = match parsed {
+                    Value::Array(a) => a,
+                    _ => continue,
+                };
+                let mut current: std::collections::HashMap<String, TosValue> =
+                    std::collections::HashMap::new();
+                for (i, v) in arr.into_iter().enumerate() {
+                    let key = format!("row-{i}");
+                    let tv = TosValue(v);
+                    if !seen.contains_key(&key) {
+                        yield ChangeEvent {
+                            op: ChangeOp::Insert,
+                            table: table_name.clone(),
+                            before: None,
+                            after: Some(tv.clone()),
+                        };
+                    } else if seen.get(&key) != Some(&tv) {
+                        let before = seen.get(&key).cloned();
+                        yield ChangeEvent {
+                            op: ChangeOp::Update,
+                            table: table_name.clone(),
+                            before,
+                            after: Some(tv.clone()),
+                        };
+                    }
+                    current.insert(key, tv);
+                }
+                for key in seen.keys() {
+                    if !current.contains_key(key) {
+                        let before = seen.get(key).cloned();
+                        yield ChangeEvent {
+                            op: ChangeOp::Delete,
+                            table: table_name.clone(),
+                            before,
+                            after: None,
+                        };
+                    }
+                }
+                seen = current;
+            }
+        };
+        Ok(Box::pin(stream))
     }
 
     async fn close(&self) -> Result<(), BoxedError> {
@@ -263,6 +326,10 @@ impl JsonAdapter {
             .expect("json lock poisoned")
             .push(value);
     }
+}
+
+fn mtime_of(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 #[cfg(test)]
@@ -441,6 +508,90 @@ mod tests {
         std::fs::write(&p, "{not valid json").unwrap();
         let res = JsonAdapter::open("a", &p);
         assert!(res.is_err());
+        cleanup(&p);
+    }
+
+    #[tokio::test]
+    async fn watch_emits_insert_on_new_row() {
+        use futures::StreamExt;
+        let p = temp_path("watch-insert");
+        cleanup(&p);
+        std::fs::write(&p, "[]").unwrap();
+        let a = JsonAdapter::new("a", &p);
+        let mut watch = a.watch("users").await.unwrap();
+        let write_task = tokio::spawn({
+            let p = p.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                std::fs::write(&p, r#"[{"id":1,"name":"x"}]"#).unwrap();
+            }
+        });
+        let evt = tokio::time::timeout(std::time::Duration::from_secs(5), watch.next())
+            .await
+            .expect("watch should emit within 5s")
+            .expect("watch stream yielded an item")
+            .expect("watch item is Ok");
+        write_task.await.unwrap();
+        assert_eq!(evt.op, ChangeOp::Insert);
+        assert_eq!(evt.table, "users");
+        assert!(evt.after.is_some());
+        assert_eq!(evt.after.unwrap().0["id"], 1);
+        cleanup(&p);
+    }
+
+    #[tokio::test]
+    async fn watch_emits_update_on_modified_row() {
+        use futures::StreamExt;
+        let p = temp_path("watch-update");
+        cleanup(&p);
+        std::fs::write(&p, r#"[{"id":1,"v":"old"}]"#).unwrap();
+        let a = JsonAdapter::open("a", &p).unwrap();
+        let mut watch = a.watch("users").await.unwrap();
+        let write_task = tokio::spawn({
+            let p = p.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                std::fs::write(&p, r#"[{"id":1,"v":"new"}]"#).unwrap();
+            }
+        });
+        let evt = tokio::time::timeout(std::time::Duration::from_secs(5), watch.next())
+            .await
+            .expect("watch should emit within 5s")
+            .expect("watch stream yielded an item")
+            .expect("watch item is Ok");
+        write_task.await.unwrap();
+        assert_eq!(evt.op, ChangeOp::Update);
+        assert!(evt.before.is_some());
+        assert!(evt.after.is_some());
+        assert_eq!(evt.before.unwrap().0["v"], "old");
+        assert_eq!(evt.after.unwrap().0["v"], "new");
+        cleanup(&p);
+    }
+
+    #[tokio::test]
+    async fn watch_emits_delete_on_removed_row() {
+        use futures::StreamExt;
+        let p = temp_path("watch-delete");
+        cleanup(&p);
+        std::fs::write(&p, r#"[{"id":1,"v":"a"}]"#).unwrap();
+        let a = JsonAdapter::open("a", &p).unwrap();
+        let mut watch = a.watch("users").await.unwrap();
+        let write_task = tokio::spawn({
+            let p = p.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                std::fs::write(&p, "[]").unwrap();
+            }
+        });
+        let evt = tokio::time::timeout(std::time::Duration::from_secs(5), watch.next())
+            .await
+            .expect("watch should emit within 5s")
+            .expect("watch stream yielded an item")
+            .expect("watch item is Ok");
+        write_task.await.unwrap();
+        assert_eq!(evt.op, ChangeOp::Delete);
+        assert!(evt.before.is_some());
+        assert!(evt.after.is_none());
         cleanup(&p);
     }
 }
