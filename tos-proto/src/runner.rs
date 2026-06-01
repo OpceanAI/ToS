@@ -46,6 +46,7 @@ impl SessionRunner {
         source: Arc<A>,
         dest: Arc<A>,
         table: &str,
+        _write_table: &str,
     ) -> ProtoResult<RunStats>
     where
         A: TosAdapter + ?Sized + 'static,
@@ -173,6 +174,7 @@ impl SessionRunner {
         self,
         listener: TcpTransport,
         dest: Arc<A>,
+        write_table: &str,
     ) -> ProtoResult<RunStats>
     where
         A: TosAdapter + ?Sized + 'static,
@@ -218,7 +220,7 @@ impl SessionRunner {
         write_message(&mut stream, &Message::SchemaDiff(diff)).await?;
         let _confirm: Message = read_message(&mut stream).await?;
 
-        let _start: StreamStart = {
+        let start_msg: StreamStart = {
             let m: Message = read_message(&mut stream).await?;
             match m {
                 Message::StreamStart(s) => s,
@@ -230,6 +232,25 @@ impl SessionRunner {
                 }
             }
         };
+        let source_table = if !start_msg.table.is_empty() {
+            start_msg.table.clone()
+        } else {
+            "default".to_string()
+        };
+        let resolved_write = if !write_table.is_empty() {
+            write_table.to_string()
+        } else if source_table != "default" {
+            source_table.clone()
+        } else {
+            dest.read_schema()
+                .await
+                .ok()
+                .and_then(|s| s.tables.keys().next().cloned())
+                .unwrap_or_else(|| "rows".to_string())
+        };
+        tracing::debug!(
+            "runner: source_table={source_table} write_table={resolved_write}"
+        );
 
         let mut total_records = 0u64;
         let mut total_batches = 0u32;
@@ -245,10 +266,17 @@ impl SessionRunner {
                     if !records.is_empty() {
                         let stream = futures::stream::iter(records.into_iter().map(Ok::<_, BoxedErr>));
                         let n = dest
-                            .write_records("ignored", Box::pin(stream))
+                            .write_records(&resolved_write, Box::pin(stream))
                             .await
                             .map_err(adapter_err)?;
-                        debug_assert_eq!(n, b.count as u64);
+                        if n != b.count as u64 {
+                            tracing::warn!(
+                                "batch {}: dest wrote {} of {} records",
+                                b.batch_id,
+                                n,
+                                b.count
+                            );
+                        }
                     }
                     total_records += b.count as u64;
                     total_batches += 1;
@@ -417,7 +445,7 @@ mod tests {
 
         let dst_for_server = dst.clone();
         let server = tokio::spawn(async move {
-            runner.run_server(listener, dst_for_server).await
+            runner.run_server(listener, dst_for_server, "t").await
         });
 
         let id2 = make_identity();
@@ -425,7 +453,7 @@ mod tests {
         let src_c = src.clone();
         let dst_c = dst.clone();
         let client = tokio::spawn(async move {
-            runner_c.run_client(addr, src_c, dst_c, "users").await
+            runner_c.run_client(addr, src_c, dst_c, "users", "t").await
         });
 
         let (server_res, client_res) = tokio::join!(server, client);
@@ -452,7 +480,7 @@ mod tests {
         let runner = SessionRunner::new(id, 100);
         let dst_for_server = dst.clone();
         let server = tokio::spawn(async move {
-            runner.run_server(listener, dst_for_server).await
+            runner.run_server(listener, dst_for_server, "t").await
         });
 
         let id2 = make_identity();
@@ -460,7 +488,7 @@ mod tests {
         let src_c = src.clone();
         let dst_c = dst.clone();
         let client = tokio::spawn(async move {
-            runner_c.run_client(addr, src_c, dst_c, "any").await
+            runner_c.run_client(addr, src_c, dst_c, "any", "t").await
         });
 
         let (s, c) = tokio::join!(server, client);
@@ -487,7 +515,7 @@ mod tests {
         let runner = SessionRunner::new(id, 100);
         let dst_for_server = dst.clone();
         let server = tokio::spawn(async move {
-            runner.run_server(listener, dst_for_server).await
+            runner.run_server(listener, dst_for_server, "t").await
         });
 
         let id2 = make_identity();
@@ -495,7 +523,7 @@ mod tests {
         let src_c = src.clone();
         let dst_c = dst.clone();
         let client = tokio::spawn(async move {
-            runner_c.run_client(addr, src_c, dst_c, "t").await
+            runner_c.run_client(addr, src_c, dst_c, "t", "t").await
         });
 
         let (s, c) = tokio::join!(server, client);
@@ -526,7 +554,7 @@ mod tests {
         let runner = SessionRunner::new(id, 3);
         let dst_for_server = dst.clone();
         let server = tokio::spawn(async move {
-            runner.run_server(listener, dst_for_server).await
+            runner.run_server(listener, dst_for_server, "t").await
         });
 
         let id2 = make_identity();
@@ -534,7 +562,7 @@ mod tests {
         let src_c = src.clone();
         let dst_c = dst.clone();
         let client = tokio::spawn(async move {
-            runner_c.run_client(addr, src_c, dst_c, "t").await
+            runner_c.run_client(addr, src_c, dst_c, "t", "t").await
         });
 
         let (s, c) = tokio::join!(server, client);

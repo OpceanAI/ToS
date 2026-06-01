@@ -288,6 +288,7 @@ pub async fn push_one(
     src: Arc<dyn TosAdapter>,
     dst: Arc<dyn TosAdapter>,
     table: &str,
+    write_table: &str,
     batch_size: u32,
 ) -> Result<RunStats> {
     let listener = TcpTransport::bind("127.0.0.1:0")
@@ -302,17 +303,27 @@ pub async fn push_one(
 
     let server_runner = SessionRunner::new(id_server.clone(), batch_size);
     let dst_for_server = dst.clone();
+    let write_for_server = write_table.to_string();
     let server = tokio::spawn(async move {
-        server_runner.run_server(listener, dst_for_server).await
+        server_runner
+            .run_server(listener, dst_for_server, &write_for_server)
+            .await
     });
 
     let client_runner = SessionRunner::new(id_client.clone(), batch_size);
     let src_for_client = src.clone();
     let dst_for_client = dst.clone();
     let table_for_client = table.to_string();
+    let write_for_client = write_table.to_string();
     let client = tokio::spawn(async move {
         client_runner
-            .run_client(addr, src_for_client, dst_for_client, &table_for_client)
+            .run_client(
+                addr,
+                src_for_client,
+                dst_for_client,
+                &table_for_client,
+                &write_for_client,
+            )
             .await
     });
 
@@ -336,8 +347,13 @@ pub async fn push(from_uri: &str, to_uri: &str, table: Option<&str>) -> Result<R
         .map(|s| s.to_string())
         .or_else(|| from.params.get("table").cloned())
         .unwrap_or_else(|| "rows".to_string());
+    let write_table = to
+        .params
+        .get("table")
+        .cloned()
+        .unwrap_or_else(|| table_name.clone());
     let batch_size = param_u64(&from, "batch", 100) as u32;
-    push_one(src, dst, &table_name, batch_size).await
+    push_one(src, dst, &table_name, &write_table, batch_size).await
 }
 
 pub async fn sync(
@@ -368,7 +384,14 @@ pub async fn sync(
     if watch {
         loop {
             for (uri, dst) in &dsts {
-                let s = push_one(src.clone(), dst.clone(), &table_name, batch_size).await
+                let to = parse(uri).with_context(|| format!("re-parsing {uri}"))?;
+                let wt = to
+                    .params
+                    .get("table")
+                    .cloned()
+                    .unwrap_or_else(|| table_name.clone());
+                let s = push_one(src.clone(), dst.clone(), &table_name, &wt, batch_size)
+                    .await
                     .with_context(|| format!("sync iteration to {uri}"))?;
                 all_stats.push(s);
             }
@@ -376,7 +399,14 @@ pub async fn sync(
         }
     } else {
         for (uri, dst) in &dsts {
-            let s = push_one(src.clone(), dst.clone(), &table_name, batch_size).await
+            let to = parse(uri).with_context(|| format!("re-parsing {uri}"))?;
+            let wt = to
+                .params
+                .get("table")
+                .cloned()
+                .unwrap_or_else(|| table_name.clone());
+            let s = push_one(src.clone(), dst.clone(), &table_name, &wt, batch_size)
+                .await
                 .with_context(|| format!("sync to {uri}"))?;
             all_stats.push(s);
         }

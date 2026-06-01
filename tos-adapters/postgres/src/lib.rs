@@ -36,7 +36,18 @@ impl PostgresAdapter {
             .acquire_timeout(std::time::Duration::from_secs(10))
             .connect(url)
             .await?;
-        let schema_name = schema_from_url(url).unwrap_or_else(|| "public".to_string());
+        let schema_name = if let Some(q) = url.split_once('?').map(|(_, q)| q) {
+            let mut found = None;
+            for kv in q.split('&') {
+                if let Some(("schema", v)) = kv.split_once('=') {
+                    found = Some(v.to_string());
+                    break;
+                }
+            }
+            found.unwrap_or_else(|| "public".to_string())
+        } else {
+            "public".to_string()
+        };
         Ok(Self {
             name: format!("postgres://{url}"),
             pool,
@@ -149,7 +160,22 @@ pub fn schema_from_url(url: &str) -> Option<String> {
     if db_part.is_empty() {
         return None;
     }
+    if let Some(q) = rest.split_once('?').map(|(_, q)| q) {
+        for kv in q.split('&') {
+            if let Some(("schema", v)) = kv.split_once('=') {
+                return Some(v.to_string());
+            }
+        }
+    }
     Some(db_part.to_string())
+}
+
+pub fn default_schema_for_db(db: &str) -> String {
+    if db.is_empty() {
+        "public".to_string()
+    } else {
+        db.to_string()
+    }
 }
 
 pub fn pg_type_to_tos(
@@ -485,6 +511,14 @@ mod tests {
     #[test]
     fn schema_from_url_default_public() {
         assert_eq!(schema_from_url("postgres://localhost:5432"), None);
+    }
+
+    #[test]
+    fn schema_from_url_with_schema_query() {
+        assert_eq!(
+            schema_from_url("postgres://u:p@host:5432/mydb?schema=tos"),
+            Some("tos".to_string())
+        );
     }
 
     #[test]

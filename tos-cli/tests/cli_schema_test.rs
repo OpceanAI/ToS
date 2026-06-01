@@ -171,10 +171,10 @@ fn schema_pull_from_json_file() {
 #[test]
 fn schema_pull_unsupported_scheme() {
     tos_bin()
-        .args(["schema", "pull", "postgres://u:p@h/db"])
+        .args(["schema", "pull", "kafka://broker:9092/topic"])
         .assert()
         .failure()
-        .stderr(str::contains("not supported"));
+        .stderr(str::contains("unknown scheme"));
 }
 
 #[test]

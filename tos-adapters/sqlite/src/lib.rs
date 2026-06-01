@@ -272,6 +272,45 @@ impl TosAdapter for SqliteAdapter {
                     continue;
                 }
                 let cols: Vec<String> = obj.keys().cloned().collect();
+                let table_exists: bool = {
+                    let mut stmt = c.prepare(
+                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+                    )?;
+                    let n: i64 = stmt.query_row([&table], |r| r.get(0))?;
+                    n > 0
+                };
+                if !table_exists {
+                    let col_defs: Vec<String> = cols
+                        .iter()
+                        .map(|c| {
+                            let v = obj.get(c);
+                            let ty = match v {
+                                Some(Value::Bool(_)) => "INTEGER",
+                                Some(Value::Number(n)) => {
+                                    if n.as_i64().is_some() {
+                                        "INTEGER"
+                                    } else {
+                                        "REAL"
+                                    }
+                                }
+                                Some(Value::String(_)) => "TEXT",
+                                Some(Value::Null) | None => "TEXT",
+                                _ => "TEXT",
+                            };
+                            format!(
+                                "\"{}\" {}",
+                                c.replace('"', "\"\""),
+                                ty
+                            )
+                        })
+                        .collect();
+                    let ddl = format!(
+                        "CREATE TABLE IF NOT EXISTS \"{}\" ({})",
+                        table.replace('"', "\"\""),
+                        col_defs.join(", ")
+                    );
+                    tx.execute(&ddl, [])?;
+                }
                 let placeholders = (1..=cols.len())
                     .map(|i| format!("?{i}"))
                     .collect::<Vec<_>>()

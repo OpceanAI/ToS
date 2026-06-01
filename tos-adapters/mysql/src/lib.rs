@@ -194,13 +194,36 @@ impl TosAdapter for MysqlAdapter {
 
     async fn write_records(
         &self,
-        _table: &str,
-        _records: RecordStream,
+        table: &str,
+        mut records: RecordStream,
     ) -> Result<u64, BoxedError> {
-        Err(MyAdapterError::Adapter(
-            "mysql write is available in S6 (full E2E)".into(),
-        )
-        .into())
+        let table_obj = self.introspect_table(table).await?;
+        let cols: Vec<String> = table_obj.fields.iter().map(|f| f.name.clone()).collect();
+        if cols.is_empty() {
+            return Ok(0);
+        }
+        let mut count = 0u64;
+        let mut tx = self.pool.begin().await?;
+        while let Some(item) = records.try_next().await? {
+            let obj = match &item.0 {
+                serde_json::Value::Object(map) => map,
+                other => {
+                    return Err(MyAdapterError::Adapter(format!(
+                        "write_records: expected JSON object, got {other}"
+                    ))
+                    .into());
+                }
+            };
+            let sql = build_insert_sql(table, &cols);
+            let mut query = sqlx::query(&sql);
+            for c in &cols {
+                query = bind_mysql_value(query, obj.get(c).cloned());
+            }
+            query.execute(&mut *tx).await?;
+            count += 1;
+        }
+        tx.commit().await?;
+        Ok(count)
     }
 
     async fn watch(&self, _table: &str) -> Result<ChangeStream, BoxedError> {
@@ -213,6 +236,47 @@ impl TosAdapter for MysqlAdapter {
     async fn close(&self) -> Result<(), BoxedError> {
         self.pool.close().await;
         Ok(())
+    }
+}
+
+pub fn quote_ident(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
+pub fn build_insert_sql(table: &str, cols: &[String]) -> String {
+    let col_list = cols
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let placeholders = vec!["?"; cols.len()].join(", ");
+    format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        quote_ident(table),
+        col_list,
+        placeholders
+    )
+}
+
+pub fn bind_mysql_value<'q>(
+    query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    value: Option<serde_json::Value>,
+) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
+    use serde_json::Value;
+    match value {
+        None | Some(Value::Null) => query.bind(Option::<String>::None),
+        Some(Value::Bool(b)) => query.bind(b),
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                query.bind(i)
+            } else if let Some(f) = n.as_f64() {
+                query.bind(f)
+            } else {
+                query.bind(n.to_string())
+            }
+        }
+        Some(Value::String(s)) => query.bind(s),
+        Some(other) => query.bind(other.to_string()),
     }
 }
 

@@ -239,6 +239,10 @@ fn quote_ident(scheme: &Scheme, name: &str) -> String {
 
 async fn build_for_pull(uri: &crate::uri::Uri) -> Result<Arc<dyn TosAdapter>> {
     use tos_adapter_json::JsonAdapter;
+    use tos_adapter_mongodb::MongodbAdapter;
+    use tos_adapter_mysql::MysqlAdapter;
+    use tos_adapter_postgres::PostgresAdapter;
+    use tos_adapter_sqlite::SqliteAdapter;
     match uri.scheme {
         Scheme::Mock => {
             let schema = crate::cmd::schema_for_dataset(&uri.dataset);
@@ -255,6 +259,32 @@ async fn build_for_pull(uri: &crate::uri::Uri) -> Result<Arc<dyn TosAdapter>> {
             JsonAdapter::open(format!("pull:{}", uri.dataset), std::path::Path::new(&uri.dataset))
                 .map_err(|e| anyhow!("json open: {e}"))?,
         )),
+        Scheme::Sqlite => {
+            let adapter = SqliteAdapter::open(format!("pull:{}", uri.dataset), &uri.dataset)
+                .map_err(|e| anyhow!("sqlite open: {e}"))?;
+            Ok(Arc::new(adapter))
+        }
+        Scheme::Postgres => {
+            let url = format!("postgres://{}", uri.dataset);
+            let adapter = PostgresAdapter::connect(&url)
+                .await
+                .map_err(|e| anyhow!("pg connect: {e}"))?;
+            Ok(Arc::new(adapter))
+        }
+        Scheme::Mysql => {
+            let url = format!("mysql://{}", uri.dataset);
+            let adapter = MysqlAdapter::connect(&url)
+                .await
+                .map_err(|e| anyhow!("mysql connect: {e}"))?;
+            Ok(Arc::new(adapter))
+        }
+        Scheme::Mongodb => {
+            let url = format!("mongodb://{}", uri.dataset);
+            let adapter = MongodbAdapter::connect(&url)
+                .await
+                .map_err(|e| anyhow!("mongodb connect: {e}"))?;
+            Ok(Arc::new(adapter))
+        }
         _ => Err(anyhow!(
             "schema pull not supported for scheme `{}` in v1.0",
             uri.scheme.as_str()

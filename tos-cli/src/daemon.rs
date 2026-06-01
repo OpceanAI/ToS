@@ -206,12 +206,7 @@ fn generate_node_id() -> String {
     let hostname = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "tos-node".to_string());
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let h = simple_hash(&format!("{hostname}-{pid}-{nanos}"));
+    let h = simple_hash(&hostname);
     format!("node-{:016x}", h)
 }
 
@@ -307,6 +302,11 @@ watch = true
         let id = generate_node_id();
         assert!(id.starts_with("node-"));
         assert_eq!(id.len(), "node-".len() + 16);
+    }
+
+    #[test]
+    fn node_id_stable_for_same_host() {
+        assert_eq!(generate_node_id(), generate_node_id());
     }
 
     #[test]
