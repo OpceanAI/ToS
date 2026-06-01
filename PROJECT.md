@@ -127,25 +127,13 @@ Con ToS:
 
 ## Arquitectura General
 
-ToS se organiza en 5 capas:
+ToS se organiza en 5 capas, numeradas de abajo hacia arriba:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                      CLI / SDK                          │  Capa 5
-├─────────────────────────────────────────────────────────┤
-│              Adaptadores (por cada DB)                  │  Capa 4
-│   MySQL | PostgreSQL | MongoDB | Redis | JSON | YAML    │
-├─────────────────────────────────────────────────────────┤
-│              Protocolo P2P (ToS-Proto)                  │  Capa 3
-│     Handshake | Stream | ACK | Topología multi-nodo     │
-├─────────────────────────────────────────────────────────┤
-│              Wire Format (ToS-Wire)                     │  Capa 2
-│          Binario | BLAKE3 | Cifrado opcional            │
-├─────────────────────────────────────────────────────────┤
-│    SDL + Sistema de Tipos Universal (ToS-Core)          │  Capa 1
-│       Schema Definition | Type system | Resolución      │
-└─────────────────────────────────────────────────────────┘
-```
+- **Capa 1 — `tos-core`**: SDL + Sistema de Tipos Universal (Schema Definition, Type system, Resolución)
+- **Capa 2 — `tos-wire`**: Wire Format (Binario, BLAKE3, Cifrado opcional)
+- **Capa 3 — `tos-proto`**: Protocolo P2P (Handshake, Stream, ACK, Topología multi-nodo)
+- **Capa 4 — `tos-adapters`**: Adaptadores por DB (MySQL, PostgreSQL, MongoDB, Redis, JSON, YAML)
+- **Capa 5 — `tos-cli`**: CLI / SDK
 
 Cada capa es independiente. Puedes usar solo el SDL sin el protocolo. Puedes implementar un adapter sin cambiar el protocolo. El protocolo no sabe qué datos mueve — solo sabe que son bytes que corresponden a un schema.
 
@@ -371,27 +359,14 @@ Crate en Rust: `quinn` (implementación de QUIC pura en Rust)
 
 ### Estados del Protocolo
 
-```
-DISCONNECTED
-    │
-    ▼ connect()
-HANDSHAKING
-    │
-    ├─ HELLO enviado
-    │
-    ▼ HELLO_ACK recibido
-READY
-    │
-    ├──────────────────────────────┐
-    ▼ push/sync iniciado           │ watch activo
-SCHEMA_NEGOTIATION                 │
-    │                              │
-    ▼ SCHEMA_CONFIRM               │
-STREAMING                          │
-    │                              │
-    ▼ STREAM_END                   │
-DONE ──────────────────────────────┘
-```
+Una conexión pasa por estos estados, en orden:
+
+1. `DISCONNECTED` — sin conexión.
+2. `HANDSHAKING` — al ejecutar `connect()`, se envía `HELLO` y se espera `HELLO_ACK`.
+3. `READY` — handshake completo, listo para transmitir.
+4. `SCHEMA_NEGOTIATION` — `push`/`sync` iniciado: se envía `SCHEMA_OFFER` y se recibe `SCHEMA_CONFIRM`. En `watch` este paso ocurre una sola vez.
+5. `STREAMING` — flujo de `BATCH`/`ACK` por tabla.
+6. `DONE` — al recibir `STREAM_END` y enviar `DONE(stats)`.
 
 ### Mensajes del Protocolo
 
@@ -474,29 +449,20 @@ CHANGE_ACK { change_id: [u8; 32] }
 
 ### Handshake Completo
 
-```
-Node A (MySQL)                           Node B (PostgreSQL)
-     │                                          │
-     │──── HELLO (v1, node_id_A, pk_A) ───────→│
-     │←─── HELLO_ACK (v1, node_id_B, pk_B) ────│
-     │         [si encrypt=true: x25519_pubs]   │
-     │                                          │
-     │  [derivar session_key via X25519 ECDH]   │
-     │                                          │
-     │──── SCHEMA_OFFER (sdl, hash, sig) ──────→│
-     │         [B verifica sig con pk_A]        │
-     │←─── SCHEMA_DIFF (resoluciones) ──────────│
-     │──── SCHEMA_CONFIRM ─────────────────────→│
-     │                                          │
-     │──── STREAM_START (session_id, table) ───→│
-     │──── BATCH(0, records, hash, sig) ───────→│
-     │←─── ACK(0) ───────────────────────────── │
-     │──── BATCH(1, records, hash, sig) ───────→│
-     │←─── ACK(1) ──────────────────────────────│
-     │         [si NACK: retransmitir]           │
-     │──── STREAM_END ─────────────────────────→│
-     │←─── DONE(stats) ─────────────────────────│
-```
+Secuencia de mensajes entre `Node A` (origen) y `Node B` (destino):
+
+1. `A → B`: `HELLO (v1, node_id_A, pk_A)`
+2. `B → A`: `HELLO_ACK (v1, node_id_B, pk_B)`
+3. Si `encrypt=true`: intercambio de claves X25519 y derivación de `session_key` vía ECDH.
+4. `A → B`: `SCHEMA_OFFER (sdl, hash, sig_A)` — B verifica la firma con `pk_A`.
+5. `B → A`: `SCHEMA_DIFF (resoluciones)` si hay diferencias.
+6. `A → B`: `SCHEMA_CONFIRM`.
+7. `A → B`: `STREAM_START (session_id, table)`.
+8. Por cada lote:
+   - `A → B`: `BATCH(i, records, hash, sig_A)`
+   - `B → A`: `ACK(i)` (o `NACK` → retransmisión)
+9. `A → B`: `STREAM_END`.
+10. `B → A`: `DONE(stats)`.
 
 ---
 
@@ -679,11 +645,7 @@ tos schema validate schema.tos
 
 ### Fan-out (1 fuente → N destinos)
 
-```
-PostgreSQL ──→ [ToS] ──┬──→ Redis (cache)
-                       ├──→ JSON  (backup)
-                       └──→ ClickHouse (analytics)
-```
+PostgreSQL → [ToS] → { Redis (cache), JSON (backup), ClickHouse (analytics) }
 
 ```bash
 tos sync --from postgres://db \
@@ -695,11 +657,7 @@ tos sync --from postgres://db \
 
 ### Merge (N fuentes → 1 destino)
 
-```
-MySQL A ──┐
-           ├──→ [ToS] ──→ PostgreSQL (consolidado)
-MySQL B ──┘
-```
+{ MySQL A, MySQL B } → [ToS] → PostgreSQL (consolidado)
 
 ```bash
 tos sync --from mysql://shard-a/db \
@@ -710,9 +668,7 @@ tos sync --from mysql://shard-a/db \
 
 ### Chain (A → B → C)
 
-```
-PostgreSQL ──→ Redis ──→ JSON
-```
+PostgreSQL → Redis → JSON
 
 En chains, cada nodo actúa como fuente para el siguiente. ToS maneja esto con sesiones enlazadas — un DONE en A dispara STREAM_START en B.
 
@@ -848,91 +804,68 @@ tos push --from json:///users.json \
 
 ## Estructura del Proyecto
 
-```
-tos/
-├── Cargo.toml               # workspace
-├── README.md
-├── LICENSE                  # Apache 2.0
-├── PROJECT.md               # este archivo
-│
-├── tos-core/                # Capa 1: SDL + Type System
-│   ├── src/
-│   │   ├── lib.rs
-│   │   ├── sdl/             # Parser SDL (TOML → TosSchema)
-│   │   │   ├── parser.rs
-│   │   │   ├── schema.rs    # structs: TosSchema, TosField, TosType
-│   │   │   └── infer.rs     # inferencia de schema desde datos
-│   │   ├── types/           # Sistema de tipos universal
-│   │   │   ├── primitive.rs
-│   │   │   ├── compound.rs
-│   │   │   └── resolve.rs   # resolución de conflictos
-│   │   └── error.rs
-│
-├── tos-wire/                # Capa 2: Wire Format
-│   ├── src/
-│   │   ├── lib.rs
-│   │   ├── batch.rs         # serialización/deserialización de batches
-│   │   ├── change.rs        # formato de CHANGE records
-│   │   ├── arrow.rs         # Arrow IPC integration
-│   │   └── msgpack.rs       # MessagePack fallback
-│
-├── tos-crypto/              # Criptografía (usada por proto y adapters)
-│   ├── src/
-│   │   ├── lib.rs
-│   │   ├── identity.rs      # keypair Ed25519, node_id
-│   │   ├── sign.rs          # sign/verify
-│   │   ├── exchange.rs      # X25519 ECDH
-│   │   ├── encrypt.rs       # ChaCha20-Poly1305
-│   │   └── hash.rs          # BLAKE3 wrappers
-│
-├── tos-proto/               # Capa 3: Protocolo P2P
-│   ├── src/
-│   │   ├── lib.rs
-│   │   ├── messages.rs      # definición de todos los mensajes
-│   │   ├── handshake.rs     # HELLO / HELLO_ACK
-│   │   ├── session.rs       # gestión de sesión completa
-│   │   ├── stream.rs        # STREAM_START / BATCH / ACK / STREAM_END
-│   │   ├── watch.rs         # CHANGE / CHANGE_ACK
-│   │   ├── topology.rs      # multi-nodo: fan-out, merge, chain
-│   │   └── transport.rs     # QUIC via quinn
-│
-├── tos-adapters/            # Capa 4: Adaptadores por DB
-│   ├── postgres/
-│   │   ├── src/
-│   │   │   ├── adapter.rs   # impl TosAdapter
-│   │   │   ├── types.rs     # mapeo tipos PG ↔ ToS
-│   │   │   ├── schema.rs    # leer/escribir schema PG
-│   │   │   ├── stream.rs    # leer/escribir datos
-│   │   │   └── watch.rs     # logical replication / LISTEN
-│   ├── mysql/
-│   ├── mongodb/
-│   ├── redis/
-│   ├── sqlite/
-│   ├── json/
-│   ├── yaml/
-│   └── txt/
-│
-├── tos-cli/                 # Capa 5: CLI
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── cmd/
-│   │   │   ├── push.rs
-│   │   │   ├── sync.rs
-│   │   │   ├── schema.rs
-│   │   │   ├── topology.rs
-│   │   │   ├── node.rs
-│   │   │   ├── status.rs
-│   │   │   └── log.rs
-│   │   └── config.rs        # ~/.tos/config.toml
-│
-└── tests/
-    ├── integration/         # tests E2E entre adaptadores reales
-    │   ├── pg_to_redis.rs
-    │   ├── mysql_to_postgres.rs
-    │   ├── json_to_sqlite.rs
-    │   └── multinode.rs
-    └── fixtures/            # schemas y datos de prueba
-```
+Raíz del workspace (`tos/`):
+
+- `Cargo.toml` — workspace
+- `README.md`, `LICENSE` (Apache 2.0), `PROJECT.md` (este archivo)
+- `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml`
+- `.github/workflows/ci.yml` — CI matrix
+- `docs/book/` — mdBook (S6)
+
+Capa 1 — `tos-core/` (SDL + Type System):
+
+- `src/lib.rs`
+- `src/error.rs`
+- `src/sdl/parser.rs` — Parser SDL (TOML → `TosSchema`)
+- `src/sdl/schema.rs` — structs: `TosSchema`, `TosField`, `TosType`
+- `src/sdl/infer.rs` — inferencia de schema desde datos
+- `src/sdl/validator.rs` — validación
+- `src/types/primitive.rs`, `src/types/compound.rs`
+- `src/resolve.rs` — resolución de conflictos
+
+Capa 2 — `tos-wire/` (Wire Format):
+
+- `src/lib.rs`
+- `src/batch.rs` — serialización/deserialización de batches
+- `src/change.rs` — formato de `CHANGE` records
+- `src/arrow.rs` — Arrow IPC integration (S5)
+- `src/msgpack.rs` — MessagePack fallback
+
+Capa 3 — `tos-crypto/` (Criptografía, usada por proto y adapters):
+
+- `src/lib.rs`, `src/error.rs`
+- `src/identity.rs` — keypair Ed25519, `node_id`
+- `src/sign.rs` — sign/verify
+- `src/exchange.rs` — X25519 ECDH
+- `src/encrypt.rs` — ChaCha20-Poly1305
+- `src/hash.rs` — BLAKE3 wrappers
+
+Capa 4 — `tos-proto/` (Protocolo P2P):
+
+- `src/lib.rs`, `src/error.rs`
+- `src/messages.rs` — definición de todos los mensajes
+- `src/handshake.rs` — `HELLO` / `HELLO_ACK`
+- `src/session.rs` — gestión de sesión completa
+- `src/stream.rs` — `STREAM_START` / `BATCH` / `ACK` / `STREAM_END`
+- `src/watch.rs` — `CHANGE` / `CHANGE_ACK`
+- `src/topology.rs` — multi-nodo: fan-out, merge, chain
+- `src/transport.rs` — TCP (S2) / QUIC via `quinn` (S4)
+
+Capa 5 — `tos-adapters/`:
+
+- `postgres/` — `adapter.rs`, `types.rs`, `schema.rs`, `stream.rs`, `watch.rs`
+- `mysql/`, `mongodb/`, `redis/`, `sqlite/`, `json/`, `yaml/`, `txt/`
+
+Capa 6 — `tos-cli/`:
+
+- `src/main.rs`
+- `src/cmd/` — `push.rs`, `sync.rs`, `schema.rs`, `topology.rs`, `node.rs`, `status.rs`, `log.rs`
+- `src/config.rs` — `~/.tos/config.toml`
+
+Tests cross-crate:
+
+- `tests/integration/` — `pg_to_redis.rs`, `mysql_to_postgres.rs`, `json_to_sqlite.rs`, `multinode.rs`
+- `tests/fixtures/` — schemas y datos de prueba
 
 ---
 
