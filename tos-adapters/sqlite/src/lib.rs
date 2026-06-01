@@ -133,12 +133,6 @@ fn row_to_value(row: &Row, cols: &[String]) -> Result<TosValue, rusqlite::Error>
 }
 
 fn decode_column(row: &Row, i: usize) -> Value {
-    if let Ok(Some(s)) = row.get::<_, Option<String>>(i) {
-        return Value::String(s);
-    }
-    if let Ok(Some(b)) = row.get::<_, Option<bool>>(i) {
-        return Value::Bool(b);
-    }
     if let Ok(Some(n)) = row.get::<_, Option<i64>>(i) {
         return Value::Number(n.into());
     }
@@ -147,11 +141,14 @@ fn decode_column(row: &Row, i: usize) -> Value {
             return Value::Number(n);
         }
     }
-    if let Ok(Some(n)) = row.get::<_, Option<i32>>(i) {
-        return Value::Number(n.into());
-    }
-    if let Ok(Some(n)) = row.get::<_, Option<i16>>(i) {
-        return Value::Number(n.into());
+    if let Ok(Some(s)) = row.get::<_, Option<String>>(i) {
+        if s == "true" {
+            return Value::Bool(true);
+        }
+        if s == "false" {
+            return Value::Bool(false);
+        }
+        return Value::String(s);
     }
     Value::Null
 }
