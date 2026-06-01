@@ -43,7 +43,7 @@ pub fn build_mock_adapter(uri: &Uri, role: &str) -> Result<Arc<MockAdapter>> {
 }
 
 pub fn build_json_adapter(uri: &Uri, role: &str) -> Result<Arc<JsonAdapter>> {
-    if uri.scheme != Scheme::Json {
+    if uri.scheme != Scheme::Json && uri.scheme != Scheme::Jsonl {
         return Err(anyhow!(
             "internal: build_json_adapter called with scheme `{}`",
             uri.scheme.as_str()
@@ -93,9 +93,15 @@ pub async fn build_redis_adapter(
         ));
     }
     let url = format!("redis://{}", uri.dataset);
+    let prefix = uri
+        .params
+        .get("prefix")
+        .cloned()
+        .unwrap_or_else(|| "tos:".to_string());
     let adapter = RedisAdapter::connect(&url)
         .await
         .with_context(|| format!("connecting to {url}"))?;
+    let adapter = adapter.with_prefix(prefix);
     let _ = role;
     Ok(Arc::new(adapter))
 }
@@ -201,6 +207,7 @@ pub async fn build_adapter(uri: &Uri, role: &str) -> Result<Arc<dyn TosAdapter>>
     match &uri.scheme {
         Scheme::Mock => Ok(build_mock_adapter(uri, role)? as Arc<dyn TosAdapter>),
         Scheme::Json => Ok(build_json_adapter(uri, role)? as Arc<dyn TosAdapter>),
+        Scheme::Jsonl => Ok(build_json_adapter(uri, role)? as Arc<dyn TosAdapter>),
         Scheme::Postgres => {
             Ok(build_postgres_adapter(uri, role).await? as Arc<dyn TosAdapter>)
         }
@@ -235,6 +242,7 @@ pub fn schema_for_dataset(name: &str) -> TosSchema {
     let mut s = TosSchema::new(name);
     let mut users = tos_core::sdl::TosTable {
         name: "rows".into(),
+        key: vec!["id".into()],
         fields: vec![],
         indexes: BTreeMap::new(),
         relations: BTreeMap::new(),
@@ -384,31 +392,47 @@ pub async fn sync(
     if watch {
         loop {
             for (uri, dst) in &dsts {
-                let to = parse(uri).with_context(|| format!("re-parsing {uri}"))?;
+                let to = match parse(uri) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("sync to {uri}: invalid URI: {e:#}");
+                        continue;
+                    }
+                };
                 let wt = to
                     .params
                     .get("table")
                     .cloned()
                     .unwrap_or_else(|| table_name.clone());
-                let s = push_one(src.clone(), dst.clone(), &table_name, &wt, batch_size)
-                    .await
-                    .with_context(|| format!("sync iteration to {uri}"))?;
-                all_stats.push(s);
+                match push_one(src.clone(), dst.clone(), &table_name, &wt, batch_size).await {
+                    Ok(s) => all_stats.push(s),
+                    Err(e) => {
+                        eprintln!("sync to {uri}: {e:#}");
+                    }
+                }
             }
             tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
         }
     } else {
         for (uri, dst) in &dsts {
-            let to = parse(uri).with_context(|| format!("re-parsing {uri}"))?;
+            let to = match parse(uri) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("sync to {uri}: invalid URI: {e:#}");
+                    continue;
+                }
+            };
             let wt = to
                 .params
                 .get("table")
                 .cloned()
                 .unwrap_or_else(|| table_name.clone());
-            let s = push_one(src.clone(), dst.clone(), &table_name, &wt, batch_size)
-                .await
-                .with_context(|| format!("sync to {uri}"))?;
-            all_stats.push(s);
+            match push_one(src.clone(), dst.clone(), &table_name, &wt, batch_size).await {
+                Ok(s) => all_stats.push(s),
+                Err(e) => {
+                    eprintln!("sync to {uri}: {e:#}");
+                }
+            }
         }
     }
     Ok(all_stats)

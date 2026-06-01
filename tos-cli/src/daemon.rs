@@ -191,10 +191,22 @@ async fn run_pipeline(
                 status.total_runs += 1;
                 status.total_records += total;
                 status.last_error = None;
-                let _ = elapsed;
+                tracing::info!(
+                    pipeline = %p.name,
+                    records = total,
+                    batches,
+                    bytes,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "pipeline tick ok"
+                );
             }
             Err(e) => {
                 status.last_error = Some(format!("{e:#}"));
+                tracing::warn!(
+                    pipeline = %p.name,
+                    error = %e,
+                    "pipeline tick failed"
+                );
             }
         }
         last_run = std::time::Instant::now();

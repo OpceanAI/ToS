@@ -106,6 +106,7 @@ impl MysqlAdapter {
         }
         Ok(TosTable {
             name: table.to_string(),
+            key: Vec::new(),
             fields,
             indexes,
             relations: BTreeMap::new(),
@@ -151,14 +152,34 @@ pub fn mysql_type_to_tos(mysql_type: &str) -> PrimitiveType {
 
 pub fn row_to_value(row: &MySqlRow) -> Result<TosValue, sqlx::Error> {
     use serde_json::{Map, Value};
+    use sqlx::TypeInfo;
     let mut obj = Map::new();
     for col in row.columns() {
         let name = col.name();
-        let v: Option<String> = row.try_get(name).ok();
-        obj.insert(
-            name.to_string(),
-            v.map(Value::String).unwrap_or(Value::Null),
-        );
+        let ty = col.type_info();
+        let v: Option<serde_json::Value> = match ty.name() {
+            "BOOLEAN" | "BOOL" | "BIT" => row
+                .try_get::<Option<bool>, _>(name)
+                .ok()
+                .flatten()
+                .map(Value::Bool),
+            "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "BIGINT" => row
+                .try_get::<Option<i64>, _>(name)
+                .ok()
+                .flatten()
+                .map(|n| Value::Number(n.into())),
+            "FLOAT" | "DOUBLE" | "REAL" | "DECIMAL" | "NUMERIC" => row
+                .try_get::<Option<f64>, _>(name)
+                .ok()
+                .flatten()
+                .and_then(|f| serde_json::Number::from_f64(f).map(Value::Number)),
+            _ => row
+                .try_get::<Option<String>, _>(name)
+                .ok()
+                .flatten()
+                .map(Value::String),
+        };
+        obj.insert(name.to_string(), v.unwrap_or(Value::Null));
     }
     Ok(TosValue(Value::Object(obj)))
 }
@@ -216,8 +237,9 @@ impl TosAdapter for MysqlAdapter {
             };
             let sql = build_insert_sql(table, &cols);
             let mut query = sqlx::query(&sql);
-            for c in &cols {
-                query = bind_mysql_value(query, obj.get(c).cloned());
+            for (i, c) in cols.iter().enumerate() {
+                let field_ty = &table_obj.fields[i].ty;
+                query = bind_mysql_value_typed(query, obj.get(c).cloned(), field_ty);
             }
             query.execute(&mut *tx).await?;
             count += 1;
@@ -262,9 +284,40 @@ pub fn bind_mysql_value<'q>(
     query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
     value: Option<serde_json::Value>,
 ) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
+    use tos_core::types::TosType;
+    bind_mysql_value_typed(query, value, &TosType::Primitive(tos_core::types::PrimitiveType::Any))
+}
+
+pub fn bind_mysql_value_typed<'q>(
+    query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    value: Option<serde_json::Value>,
+    field_ty: &tos_core::types::TosType,
+) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
     use serde_json::Value;
+    use tos_core::types::{PrimitiveType, TosType};
+    if matches!(value, None | Some(Value::Null)) {
+        return match field_ty {
+            TosType::Primitive(p) => match p {
+                PrimitiveType::Int8
+                | PrimitiveType::Int16
+                | PrimitiveType::Int32
+                | PrimitiveType::Int64
+                | PrimitiveType::Uint8
+                | PrimitiveType::Uint16
+                | PrimitiveType::Uint32
+                | PrimitiveType::Uint64 => query.bind(Option::<i64>::None),
+                PrimitiveType::Float32 | PrimitiveType::Float64 | PrimitiveType::Decimal { .. } => {
+                    query.bind(Option::<f64>::None)
+                }
+                PrimitiveType::Bool => query.bind(Option::<bool>::None),
+                PrimitiveType::Bytes { .. } => query.bind(Option::<Vec<u8>>::None),
+                PrimitiveType::Any => query.bind(Option::<serde_json::Value>::None),
+                _ => query.bind(Option::<String>::None),
+            },
+            TosType::Compound(_) => query.bind(Option::<serde_json::Value>::None),
+        };
+    }
     match value {
-        None | Some(Value::Null) => query.bind(Option::<String>::None),
         Some(Value::Bool(b)) => query.bind(b),
         Some(Value::Number(n)) => {
             if let Some(i) = n.as_i64() {
@@ -275,8 +328,21 @@ pub fn bind_mysql_value<'q>(
                 query.bind(n.to_string())
             }
         }
-        Some(Value::String(s)) => query.bind(s),
+        Some(Value::String(s)) => {
+            if s == "true" {
+                query.bind(true)
+            } else if s == "false" {
+                query.bind(false)
+            } else if let Ok(i) = s.parse::<i64>() {
+                query.bind(i)
+            } else if let Ok(f) = s.parse::<f64>() {
+                query.bind(f)
+            } else {
+                query.bind(s)
+            }
+        }
         Some(other) => query.bind(other.to_string()),
+        None => query.bind(Option::<String>::None),
     }
 }
 

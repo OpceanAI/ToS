@@ -299,6 +299,7 @@ fn derive_schema(records: &[TosValue]) -> TosSchema {
                 "rows".to_string(),
                 TosTable {
                     name: "rows".to_string(),
+                    key: vec![],
                     fields,
                     indexes: std::collections::BTreeMap::new(),
                     relations: std::collections::BTreeMap::new(),

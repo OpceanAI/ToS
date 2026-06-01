@@ -18,6 +18,8 @@ pub enum JsonAdapterError {
     Json(#[from] serde_json::Error),
     #[error("adapter: {0}")]
     Adapter(String),
+    #[error("parse: {0}")]
+    Parse(String),
 }
 
 pub struct JsonAdapter {
@@ -44,8 +46,28 @@ impl JsonAdapter {
             if raw.trim().is_empty() {
                 Vec::new()
             } else {
-                let parsed: Value = serde_json::from_str(&raw)?;
-                json_array_to_records(parsed)?
+                let is_jsonl = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("jsonl") || e.eq_ignore_ascii_case("ndjson"))
+                    .unwrap_or(false);
+                if is_jsonl {
+                    raw.lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| {
+                            let v: Value = serde_json::from_str(l)?;
+                            match v {
+                                Value::Object(_) => Ok(TosValue(v)),
+                                other => Err(JsonAdapterError::Parse(format!(
+                                    "jsonl line is not an object: {other}"
+                                ))),
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                } else {
+                    let parsed: Value = serde_json::from_str(&raw)?;
+                    json_array_to_records(parsed)?
+                }
             }
         } else {
             Vec::new()
@@ -76,8 +98,23 @@ impl JsonAdapter {
 
     pub fn save(&self) -> Result<(), JsonAdapterError> {
         let records = self.records.read().expect("json lock poisoned");
-        let arr: Vec<&Value> = records.iter().map(|t| &t.0).collect();
-        let serialized = serde_json::to_string_pretty(&arr)?;
+        let is_jsonl = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("jsonl") || e.eq_ignore_ascii_case("ndjson"))
+            .unwrap_or(false);
+        let serialized = if is_jsonl {
+            let mut s = String::new();
+            for r in records.iter() {
+                s.push_str(&serde_json::to_string(&r.0)?);
+                s.push('\n');
+            }
+            s
+        } else {
+            let arr: Vec<&Value> = records.iter().map(|t| &t.0).collect();
+            serde_json::to_string_pretty(&arr)?
+        };
         if let Some(parent) = self.path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
@@ -160,6 +197,7 @@ fn infer_table(name: &str, obj: &Map<String, Value>) -> TosTable {
     }
     TosTable {
         name: name.to_string(),
+        key: vec![],
         fields,
         indexes: std::collections::BTreeMap::new(),
         relations: std::collections::BTreeMap::new(),

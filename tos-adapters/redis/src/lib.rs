@@ -52,6 +52,11 @@ impl RedisAdapter {
         }
     }
 
+    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.key_prefix = prefix.into();
+        self
+    }
+
     pub fn key(&self, id: &str) -> String {
         format!("{}{}", self.key_prefix, id)
     }
@@ -162,6 +167,7 @@ fn derive_schema(samples: &[TosValue]) -> TosSchema {
                 "rows".to_string(),
                 TosTable {
                     name: "rows".to_string(),
+                    key: vec![],
                     fields,
                     indexes: BTreeMap::new(),
                     relations: BTreeMap::new(),

@@ -88,9 +88,21 @@ fn parse_table(table_name: String, table: &toml::Table) -> CoreResult<(TosTable,
     let mut fields = Vec::new();
     let mut indexes = BTreeMap::new();
     let mut relations = BTreeMap::new();
+    let mut key: Vec<String> = Vec::new();
 
-    for (key, value) in table {
-        match key.as_str() {
+    for (k, value) in table {
+        match k.as_str() {
+            "key" => {
+                let arr = value.as_array().ok_or_else(|| CoreError::Parse {
+                    line: 0,
+                    col: 0,
+                    msg: format!("{table_name}.key must be an array of field names"),
+                })?;
+                key = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+            }
             "indexes" => {
                 let idx_table = value.as_table().ok_or_else(|| CoreError::Parse {
                     line: 0,
@@ -190,18 +202,26 @@ fn parse_table(table_name: String, table: &toml::Table) -> CoreResult<(TosTable,
                 let field_t = value.as_table().ok_or_else(|| CoreError::Parse {
                     line: 0,
                     col: 0,
-                    msg: format!("field '{key}' must be a table"),
+                    msg: format!("field '{k}' must be a table"),
                 })?;
                 let raw = parse_field_raw(field_t)?;
-                let field = convert_field(key.clone(), raw)?;
+                let field = convert_field(k.clone(), raw)?;
                 fields.push(field);
             }
+        }
+    }
+
+    let keyset: std::collections::HashSet<&String> = key.iter().collect();
+    for f in fields.iter_mut() {
+        if keyset.contains(&f.name) {
+            f.primary = true;
         }
     }
 
     Ok((
         TosTable {
             name: table_name,
+            key,
             fields,
             indexes,
             relations,

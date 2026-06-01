@@ -28,7 +28,7 @@ pub async fn push(file: &Path, uri_str: &str) -> Result<()> {
     let uri = parse(uri_str).context("invalid URI")?;
 
     match uri.scheme {
-        Scheme::Json | Scheme::Yaml | Scheme::Txt => {
+        Scheme::Json | Scheme::Jsonl | Scheme::Yaml | Scheme::Txt => {
             let sidecar = sidecar_for(&uri.dataset, file);
             std::fs::write(&sidecar, to_sdl(&schema))
                 .with_context(|| format!("writing sidecar {}", sidecar.display()))?;
@@ -40,8 +40,27 @@ pub async fn push(file: &Path, uri_str: &str) -> Result<()> {
             Ok(())
         }
         Scheme::Postgres | Scheme::Mysql | Scheme::Sqlite => {
+            let requested = uri
+                .params
+                .get("table")
+                .cloned()
+                .or_else(|| {
+                    schema
+                        .tables
+                        .keys()
+                        .next()
+                        .map(|s| s.to_string())
+                });
             for table in schema.tables.values() {
-                let stmt = generate_create_table(&uri.scheme, table);
+                let stmt = if let Some(ref want) = requested {
+                    let mut t = table.clone();
+                    if want != &t.name {
+                        t.name = want.clone();
+                    }
+                    generate_create_table(&uri.scheme, &t)
+                } else {
+                    generate_create_table(&uri.scheme, table)
+                };
                 println!("{stmt};");
             }
             println!("# dry-run: not executed against the database");
@@ -92,12 +111,69 @@ pub async fn infer(path: &Path) -> Result<()> {
                 tables: [(tbl.name.clone(), tbl)].into_iter().collect(),
             }
         }
+        "yaml" | "yml" => {
+            use tos_core::sdl::TosField;
+            use tos_core::types::TosType;
+            use tos_core::types::PrimitiveType;
+            let de: serde_json::Value = serde_yaml::from_str(&text)
+                .map_err(|e| anyhow!("yaml parse: {e}"))?;
+            let arr = match de {
+                serde_json::Value::Array(a) => a,
+                other => vec![other],
+            };
+            if arr.is_empty() {
+                return Err(anyhow!("no YAML records found in {}", path.display()));
+            }
+            let mut fields: Vec<TosField> = Vec::new();
+            if let Some(serde_json::Value::Object(obj)) = arr.first() {
+                for (i, (k, v)) in obj.iter().enumerate() {
+                    let prim = match v {
+                        serde_json::Value::Bool(_) => PrimitiveType::Bool,
+                        serde_json::Value::Number(n) => {
+                            if n.as_i64().is_some() {
+                                PrimitiveType::Int64
+                            } else {
+                                PrimitiveType::Float64
+                            }
+                        }
+                        serde_json::Value::String(_) => PrimitiveType::Text { max: None },
+                        _ => PrimitiveType::Any,
+                    };
+                    fields.push(TosField {
+                        name: k.clone(),
+                        ty: TosType::Primitive(prim),
+                        nullable: true,
+                        primary: i == 0,
+                        unique: false,
+                        default: None,
+                        index: if i == 0 {
+                            Some(tos_core::sdl::FieldIndex { order: 0 })
+                        } else {
+                            None
+                        },
+                        comment: None,
+                    });
+                }
+            }
+            let tbl = tos_core::sdl::TosTable {
+                name: table_name.clone(),
+                key: vec![],
+                fields,
+                indexes: std::collections::BTreeMap::new(),
+                relations: std::collections::BTreeMap::new(),
+            };
+            TosSchema {
+                name: "inferred".into(),
+                version: "0.1.0".into(),
+                tables: [(tbl.name.clone(), tbl)].into_iter().collect(),
+            }
+        }
         "toml" | "tos" => {
             parse_sdl(&text).map_err(|e| anyhow!("SDL parse error: {e}"))?
         }
         other => {
             return Err(anyhow!(
-                "cannot infer from extension `.{other}` (use .json, .csv, .tsv, or .toml)"
+                "cannot infer from extension `.{other}` (use .json, .jsonl, .csv, .tsv, .yaml, or .toml)"
             ));
         }
     };
@@ -242,7 +318,10 @@ async fn build_for_pull(uri: &crate::uri::Uri) -> Result<Arc<dyn TosAdapter>> {
     use tos_adapter_mongodb::MongodbAdapter;
     use tos_adapter_mysql::MysqlAdapter;
     use tos_adapter_postgres::PostgresAdapter;
+    use tos_adapter_redis::RedisAdapter;
     use tos_adapter_sqlite::SqliteAdapter;
+    use tos_adapter_txt::TxtAdapter;
+    use tos_adapter_yaml::YamlAdapter;
     match uri.scheme {
         Scheme::Mock => {
             let schema = crate::cmd::schema_for_dataset(&uri.dataset);
@@ -258,6 +337,25 @@ async fn build_for_pull(uri: &crate::uri::Uri) -> Result<Arc<dyn TosAdapter>> {
         Scheme::Json => Ok(Arc::new(
             JsonAdapter::open(format!("pull:{}", uri.dataset), std::path::Path::new(&uri.dataset))
                 .map_err(|e| anyhow!("json open: {e}"))?,
+        )),
+        Scheme::Jsonl => Ok(Arc::new(
+            JsonAdapter::open(
+                format!("pull:{}", uri.dataset),
+                std::path::Path::new(&uri.dataset),
+            )
+            .map_err(|e| anyhow!("jsonl open: {e}"))?,
+        )),
+        Scheme::Txt => Ok(Arc::new(
+            TxtAdapter::open(
+                format!("pull:{}", uri.dataset),
+                std::path::Path::new(&uri.dataset),
+                tos_adapter_txt::Delimiter::Comma,
+            )
+            .map_err(|e| anyhow!("txt open: {e}"))?,
+        )),
+        Scheme::Yaml => Ok(Arc::new(
+            YamlAdapter::open(format!("pull:{}", uri.dataset), std::path::Path::new(&uri.dataset))
+                .map_err(|e| anyhow!("yaml open: {e}"))?,
         )),
         Scheme::Sqlite => {
             let adapter = SqliteAdapter::open(format!("pull:{}", uri.dataset), &uri.dataset)
@@ -285,9 +383,12 @@ async fn build_for_pull(uri: &crate::uri::Uri) -> Result<Arc<dyn TosAdapter>> {
                 .map_err(|e| anyhow!("mongodb connect: {e}"))?;
             Ok(Arc::new(adapter))
         }
-        _ => Err(anyhow!(
-            "schema pull not supported for scheme `{}` in v1.0",
-            uri.scheme.as_str()
-        )),
+        Scheme::Redis => {
+            let url = format!("redis://{}", uri.dataset);
+            let adapter = RedisAdapter::connect(&url)
+                .await
+                .map_err(|e| anyhow!("redis connect: {e}"))?;
+            Ok(Arc::new(adapter))
+        }
     }
 }

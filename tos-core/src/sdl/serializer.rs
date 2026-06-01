@@ -140,6 +140,18 @@ pub fn tables_differ(a: &TosTable, b: &TosTable) -> Vec<String> {
             ));
         }
     }
+    let a_names: std::collections::HashSet<&str> = a.fields.iter().map(|f| f.name.as_str()).collect();
+    let b_names: std::collections::HashSet<&str> = b.fields.iter().map(|f| f.name.as_str()).collect();
+    for f in &b.fields {
+        if !a_names.contains(f.name.as_str()) {
+            diffs.push(format!("added in right: `{}` ({})", f.name, tos_type_name(&f.ty)));
+        }
+    }
+    for f in &a.fields {
+        if !b_names.contains(f.name.as_str()) {
+            diffs.push(format!("added in left: `{}` ({})", f.name, tos_type_name(&f.ty)));
+        }
+    }
     diffs
 }
 
@@ -221,6 +233,7 @@ mod tests {
         let mut s = empty_schema();
         let t = TosTable {
             name: "users".into(),
+            key: vec![],
             fields: vec![],
             indexes: std::collections::BTreeMap::new(),
             relations: std::collections::BTreeMap::new(),
@@ -269,12 +282,14 @@ mod tests {
     fn tables_differ_empty() {
         let a = TosTable {
             name: "x".into(),
+            key: vec![],
             fields: vec![],
             indexes: BTreeMap::new(),
             relations: BTreeMap::new(),
         };
         let b = TosTable {
             name: "x".into(),
+            key: vec![],
             fields: vec![],
             indexes: BTreeMap::new(),
             relations: BTreeMap::new(),
@@ -286,6 +301,7 @@ mod tests {
     fn tables_differ_field_count() {
         let a = TosTable {
             name: "x".into(),
+            key: vec![],
             fields: vec![TosField {
                 name: "id".into(),
                 ty: TosType::Primitive(PrimitiveType::Int64),
@@ -301,6 +317,7 @@ mod tests {
         };
         let b = TosTable {
             name: "x".into(),
+            key: vec![],
             fields: vec![],
             indexes: BTreeMap::new(),
             relations: BTreeMap::new(),
@@ -323,12 +340,14 @@ mod tests {
         };
         let a = TosTable {
             name: "x".into(),
+            key: vec![],
             fields: vec![mk(PrimitiveType::Int64)],
             indexes: BTreeMap::new(),
             relations: BTreeMap::new(),
         };
         let b = TosTable {
             name: "x".into(),
+            key: vec![],
             fields: vec![mk(PrimitiveType::Float64)],
             indexes: BTreeMap::new(),
             relations: BTreeMap::new(),
@@ -341,6 +360,7 @@ mod tests {
     fn write_diff_table_no_diffs() {
         let t = TosTable {
             name: "x".into(),
+            key: vec![],
             fields: vec![],
             indexes: BTreeMap::new(),
             relations: BTreeMap::new(),

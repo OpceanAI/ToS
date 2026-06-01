@@ -62,6 +62,7 @@ pub fn infer_schema_json(table_name: impl Into<String>, records: Vec<Json>) -> C
 
     Ok(TosTable {
         name: table_name,
+        key: Vec::new(),
         fields,
         indexes: BTreeMap::new(),
         relations: BTreeMap::new(),
@@ -129,6 +130,7 @@ pub fn infer_schema_csv(
 
     Ok(TosTable {
         name: table_name,
+        key: Vec::new(),
         fields,
         indexes: BTreeMap::new(),
         relations: BTreeMap::new(),

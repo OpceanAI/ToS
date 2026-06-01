@@ -69,6 +69,7 @@ pub struct TosRelation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TosTable {
     pub name: String,
+    pub key: Vec<String>,
     pub fields: Vec<TosField>,
     pub indexes: BTreeMap<String, TosIndex>,
     pub relations: BTreeMap<String, TosRelation>,
@@ -113,6 +114,7 @@ mod tests {
         let mut schema = TosSchema::new("test");
         let table = TosTable {
             name: "users".into(),
+            key: vec![],
             fields: vec![TosField {
                 name: "id".into(),
                 ty: TosType::Primitive(PrimitiveType::Int64),

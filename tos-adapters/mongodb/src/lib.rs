@@ -97,6 +97,7 @@ impl MongodbAdapter {
         }
         Ok(TosTable {
             name: name.to_string(),
+            key: vec![],
             fields,
             indexes: BTreeMap::new(),
             relations: BTreeMap::new(),

@@ -88,6 +88,7 @@ impl SqliteAdapter {
         }
         Ok(TosTable {
             name: table.to_string(),
+            key: vec![],
             fields,
             indexes: std::collections::BTreeMap::new(),
             relations: std::collections::BTreeMap::new(),
@@ -209,6 +210,7 @@ impl TosAdapter for SqliteAdapter {
                 }
                 schema.add_table(TosTable {
                     name: name.clone(),
+                    key: vec![],
                     fields,
                     indexes: std::collections::BTreeMap::new(),
                     relations: std::collections::BTreeMap::new(),

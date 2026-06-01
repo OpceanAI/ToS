@@ -9,6 +9,7 @@ pub enum Scheme {
     Mongodb,
     Redis,
     Json,
+    Jsonl,
     Yaml,
     Txt,
 }
@@ -23,6 +24,7 @@ impl Scheme {
             "mongodb" => Some(Scheme::Mongodb),
             "redis" => Some(Scheme::Redis),
             "json" => Some(Scheme::Json),
+            "jsonl" => Some(Scheme::Jsonl),
             "yaml" | "yml" => Some(Scheme::Yaml),
             "txt" => Some(Scheme::Txt),
             _ => None,
@@ -38,6 +40,7 @@ impl Scheme {
             Scheme::Mongodb => "mongodb",
             Scheme::Redis => "redis",
             Scheme::Json => "json",
+            Scheme::Jsonl => "jsonl",
             Scheme::Yaml => "yaml",
             Scheme::Txt => "txt",
         }
@@ -48,6 +51,7 @@ impl Scheme {
             self,
             Scheme::Mock
                 | Scheme::Json
+                | Scheme::Jsonl
                 | Scheme::Postgres
                 | Scheme::Mysql
                 | Scheme::Mongodb
@@ -179,6 +183,13 @@ mod tests {
         assert_eq!(u.params.get("table").unwrap(), "line_items");
         assert_eq!(u.params.get("seed").unwrap(), "42");
         assert_eq!(u.params.get("records").unwrap(), "500");
+    }
+
+    #[test]
+    fn parse_jsonl_scheme() {
+        let u = parse("jsonl://data/users.jsonl").unwrap();
+        assert_eq!(u.scheme, Scheme::Jsonl);
+        assert_eq!(u.dataset, "data/users.jsonl");
     }
 
     #[test]

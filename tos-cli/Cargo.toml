@@ -31,6 +31,7 @@ tos-adapter-txt = { path = "../tos-adapters/txt" }
 tokio = { workspace = true, features = ["signal"] }
 futures = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 serde = { workspace = true }
 toml = { workspace = true }
 clap = { workspace = true }
