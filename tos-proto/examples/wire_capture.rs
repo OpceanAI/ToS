@@ -10,7 +10,6 @@ use tos_proto::messages::{
     Ack, Batch, Hello, HelloAck, Message, SchemaConfirm, SchemaDiff, SchemaOffer, StreamEnd,
     StreamStart, PROTOCOL_VERSION,
 };
-use tos_proto::transport::{read_frame, write_frame};
 
 const REAL_PORT: u16 = 38767;
 
@@ -311,7 +310,7 @@ active = { type = "bool" }
     frame_write_with_log(&mut stream, &Message::StreamStart(start), "C→S", &log).unwrap();
     println!("\x1b[36m│\x1b[0m [client] sent StreamStart");
 
-    for i in 0..3u32 {
+    for _i in 0..3u32 {
         let batch = match frame_read(&mut stream) {
             Ok(Message::Batch(b)) => b,
             _ => return,
