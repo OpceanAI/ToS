@@ -1,0 +1,20 @@
+[package]
+name = "tos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ToS command-line interface (scaffold)"
+
+[[bin]]
+name = "tos"
+path = "src/main.rs"
+
+[dependencies]
+tos-core = { path = "../tos-core" }
+tos-crypto = { path = "../tos-crypto" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
