@@ -36,9 +36,10 @@ fn parse_unknown_scheme() {
 }
 
 #[test]
-fn parse_unsupported_scheme_mysql() {
-    let err = parse("mysql://localhost/db").unwrap_err();
-    assert!(matches!(err, tos_cli::uri::UriError::UnsupportedScheme(ref s, _) if s == "mysql"));
+fn parse_mysql_is_supported() {
+    let u = parse("mysql://user:pass@host:3306/mydb").unwrap();
+    assert_eq!(u.scheme, Scheme::Mysql);
+    assert_eq!(u.dataset, "user:pass@host:3306/mydb");
 }
 
 #[test]

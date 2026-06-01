@@ -43,10 +43,18 @@ impl Scheme {
         }
     }
 
-    pub fn is_supported_in_v01(&self) -> bool {
+    pub fn is_supported_in_v1(&self) -> bool {
         matches!(
             self,
-            Scheme::Mock | Scheme::Json | Scheme::Postgres
+            Scheme::Mock
+                | Scheme::Json
+                | Scheme::Postgres
+                | Scheme::Mysql
+                | Scheme::Mongodb
+                | Scheme::Sqlite
+                | Scheme::Yaml
+                | Scheme::Txt
+                | Scheme::Redis
         )
     }
 }
@@ -77,7 +85,7 @@ pub fn parse(s: &str) -> Result<Uri, UriError> {
     let (scheme_str, rest) = split_scheme(s)?;
     let scheme = Scheme::parse(&scheme_str)
         .ok_or_else(|| UriError::UnknownScheme(scheme_str.clone()))?;
-    if !scheme.is_supported_in_v01() {
+    if !scheme.is_supported_in_v1() {
         return Err(UriError::UnsupportedScheme(
             scheme.as_str().to_string(),
             supported_schemes_hint(scheme.as_str()),
@@ -133,16 +141,8 @@ fn parse_query(q: &str) -> HashMap<String, String> {
     out
 }
 
-fn supported_schemes_hint(scheme: &str) -> &'static str {
-    match scheme {
-        "mysql" => "S4 (v0.5)",
-        "sqlite" => "S5 (v1.0)",
-        "mongodb" => "S5 (v1.0)",
-        "redis" => "S4 (v0.5)",
-        "yaml" | "yml" => "S5 (v1.0)",
-        "txt" => "S5 (v1.0)",
-        _ => "later session",
-    }
+fn supported_schemes_hint(_scheme: &str) -> &'static str {
+    "later session"
 }
 
 pub fn param_u64(uri: &Uri, key: &str, default: u64) -> u64 {
@@ -192,9 +192,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_unsupported_scheme_mysql() {
-        let err = parse("mysql://localhost/db").unwrap_err();
-        assert!(matches!(err, UriError::UnsupportedScheme(ref s, _) if s == "mysql"));
+    fn parse_unsupported_scheme_none() {
+        for uri in &[
+            "mock://x",
+            "json:///tmp/x.json",
+            "postgres://user@host/db",
+            "mysql://user@host/db",
+            "sqlite:///tmp/x.db",
+            "mongodb://host/db",
+            "redis://host:6379",
+            "yaml:///tmp/x.yaml",
+            "txt:///tmp/x.csv",
+        ] {
+            let res = parse(uri);
+            assert!(res.is_ok(), "expected Ok for {uri}, got: {res:?}");
+        }
     }
 
     #[test]
@@ -241,6 +253,14 @@ mod tests {
     fn param_u64_invalid_returns_default() {
         let u = parse("mock://a?records=notanumber").unwrap();
         assert_eq!(param_u64(&u, "records", 7), 7);
+    }
+
+    #[test]
+    fn parse_mysql_now_supported() {
+        let u = parse("mysql://user:pass@host:3306/mydb?table=users").unwrap();
+        assert_eq!(u.scheme, Scheme::Mysql);
+        assert_eq!(u.dataset, "user:pass@host:3306/mydb");
+        assert_eq!(u.params.get("table").unwrap(), "users");
     }
 
     #[test]

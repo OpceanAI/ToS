@@ -6,7 +6,13 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 use tos_adapter_json::JsonAdapter;
+use tos_adapter_mongodb::MongodbAdapter;
+use tos_adapter_mysql::MysqlAdapter;
 use tos_adapter_postgres::PostgresAdapter;
+use tos_adapter_redis::RedisAdapter;
+use tos_adapter_sqlite::SqliteAdapter;
+use tos_adapter_txt::{Delimiter, TxtAdapter};
+use tos_adapter_yaml::YamlAdapter;
 use tos_core::adapter::{TosAdapter, TosValue};
 use tos_core::sdl::TosSchema;
 use tos_core::MockAdapter;
@@ -79,8 +85,7 @@ pub async fn build_postgres_adapter(
 pub async fn build_redis_adapter(
     uri: &Uri,
     role: &str,
-) -> Result<Arc<tos_adapter_redis::RedisAdapter>> {
-    use tos_adapter_redis::RedisAdapter;
+) -> Result<Arc<RedisAdapter>> {
     if uri.scheme != Scheme::Redis {
         return Err(anyhow!(
             "internal: build_redis_adapter called with scheme `{}`",
@@ -95,6 +100,103 @@ pub async fn build_redis_adapter(
     Ok(Arc::new(adapter))
 }
 
+pub async fn build_mysql_adapter(
+    uri: &Uri,
+    role: &str,
+) -> Result<Arc<MysqlAdapter>> {
+    if uri.scheme != Scheme::Mysql {
+        return Err(anyhow!(
+            "internal: build_mysql_adapter called with scheme `{}`",
+            uri.scheme.as_str()
+        ));
+    }
+    let url = format!("mysql://{}", uri.dataset);
+    let adapter = MysqlAdapter::connect(&url)
+        .await
+        .with_context(|| format!("connecting to {url}"))?;
+    let _ = role;
+    Ok(Arc::new(adapter))
+}
+
+pub async fn build_sqlite_adapter(
+    uri: &Uri,
+    role: &str,
+) -> Result<Arc<SqliteAdapter>> {
+    if uri.scheme != Scheme::Sqlite {
+        return Err(anyhow!(
+            "internal: build_sqlite_adapter called with scheme `{}`",
+            uri.scheme.as_str()
+        ));
+    }
+    let path = if uri.dataset == ":memory:" || uri.dataset.is_empty() {
+        ":memory:".to_string()
+    } else {
+        uri.dataset.clone()
+    };
+    let adapter = SqliteAdapter::open(format!("{role}:{path}"), &path)
+        .with_context(|| format!("opening sqlite at {path}"))?;
+    Ok(Arc::new(adapter))
+}
+
+pub async fn build_mongodb_adapter(
+    uri: &Uri,
+    role: &str,
+) -> Result<Arc<MongodbAdapter>> {
+    if uri.scheme != Scheme::Mongodb {
+        return Err(anyhow!(
+            "internal: build_mongodb_adapter called with scheme `{}`",
+            uri.scheme.as_str()
+        ));
+    }
+    let url = format!("mongodb://{}", uri.dataset);
+    let adapter = MongodbAdapter::connect(&url)
+        .await
+        .with_context(|| format!("connecting to {url}"))?;
+    let _ = role;
+    Ok(Arc::new(adapter))
+}
+
+pub fn build_yaml_adapter(
+    uri: &Uri,
+    role: &str,
+) -> Result<Arc<YamlAdapter>> {
+    if uri.scheme != Scheme::Yaml {
+        return Err(anyhow!(
+            "internal: build_yaml_adapter called with scheme `{}`",
+            uri.scheme.as_str()
+        ));
+    }
+    let path = uri.dataset.clone();
+    let adapter = if std::path::Path::new(&path).exists() {
+        YamlAdapter::open(format!("{role}:{path}"), &path)
+            .with_context(|| format!("opening yaml {path}"))?
+    } else {
+        YamlAdapter::new(format!("{role}:{path}"), &path)
+    };
+    Ok(Arc::new(adapter))
+}
+
+pub fn build_txt_adapter(
+    uri: &Uri,
+    role: &str,
+) -> Result<Arc<TxtAdapter>> {
+    if uri.scheme != Scheme::Txt {
+        return Err(anyhow!(
+            "internal: build_txt_adapter called with scheme `{}`",
+            uri.scheme.as_str()
+        ));
+    }
+    let delim = Delimiter::from_name(uri.params.get("delim").map(|s| s.as_str()).unwrap_or("csv"));
+    let path = uri.dataset.clone();
+    let adapter = if std::path::Path::new(&path).exists() {
+        TxtAdapter::open(format!("{role}:{path}"), &path, delim)
+            .with_context(|| format!("opening txt {path}"))?
+    } else {
+        TxtAdapter::new(format!("{role}:{path}"), &path, delim)
+    };
+    Ok(Arc::new(adapter))
+}
+
 pub async fn build_adapter(uri: &Uri, role: &str) -> Result<Arc<dyn TosAdapter>> {
     match &uri.scheme {
         Scheme::Mock => Ok(build_mock_adapter(uri, role)? as Arc<dyn TosAdapter>),
@@ -105,11 +207,17 @@ pub async fn build_adapter(uri: &Uri, role: &str) -> Result<Arc<dyn TosAdapter>>
         Scheme::Redis => {
             Ok(build_redis_adapter(uri, role).await? as Arc<dyn TosAdapter>)
         }
-        other => Err(anyhow!(
-            "scheme `{}` not supported in v0.1 ({} side)",
-            other.as_str(),
-            role
-        )),
+        Scheme::Mysql => {
+            Ok(build_mysql_adapter(uri, role).await? as Arc<dyn TosAdapter>)
+        }
+        Scheme::Sqlite => {
+            Ok(build_sqlite_adapter(uri, role).await? as Arc<dyn TosAdapter>)
+        }
+        Scheme::Mongodb => {
+            Ok(build_mongodb_adapter(uri, role).await? as Arc<dyn TosAdapter>)
+        }
+        Scheme::Yaml => Ok(build_yaml_adapter(uri, role)? as Arc<dyn TosAdapter>),
+        Scheme::Txt => Ok(build_txt_adapter(uri, role)? as Arc<dyn TosAdapter>),
     }
 }
 
@@ -360,7 +468,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_adapter_rejects_unsupported() {
+    async fn build_adapter_dispatches_mysql_uri() {
         let u = uri(Scheme::Mysql, "localhost/db", vec![]);
         let res = build_adapter(&u, "src").await;
         assert!(res.is_err());

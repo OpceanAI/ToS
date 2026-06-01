@@ -20,6 +20,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+quinn = "0.11.9"
+rcgen = "0.14.7"
 
 [dev-dependencies]
 ed25519-dalek = { workspace = true }

@@ -1,10 +1,15 @@
 mod cmd;
+mod daemon;
+mod schema;
 mod uri;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::cmd::{push, sync};
+use crate::daemon::{load_config, Daemon};
 
 #[derive(Parser, Debug)]
 #[command(name = "tos", version, about = "Translation of Service: P2P data sync")]
@@ -108,27 +113,93 @@ async fn main() -> Result<()> {
                 Err(e) => Err(e),
             }
         }
-        Command::Schema { action } => {
-            eprintln!("[scaffold] tos schema {action:?}");
-            eprintln!("[scaffold] real implementation in S5");
-            Ok(())
-        }
+        Command::Schema { action } => match action {
+            SchemaAction::Pull { uri } => schema::pull(&uri).await,
+            SchemaAction::Push { file, to } => schema::push(&PathBuf::from(file), &to).await,
+            SchemaAction::Infer { from } => schema::infer(&PathBuf::from(from)).await,
+            SchemaAction::Diff { file1, file2 } => {
+                schema::diff(&PathBuf::from(file1), &PathBuf::from(file2))
+            }
+            SchemaAction::Validate { file } => schema::validate_file(&PathBuf::from(file)),
+        },
         Command::Topology { file, start } => {
-            eprintln!("[scaffold] tos topology --file {file:?} --start {start}");
-            eprintln!("[scaffold] real implementation in S5");
-            Ok(())
+            if start {
+                let path = file
+                    .map(PathBuf::from)
+                    .unwrap_or_else(crate::daemon::default_topology_path);
+                let cfg = load_config(&path)?;
+                let mut d = Daemon::new(cfg);
+                d.start().await?;
+                println!(
+                    "node {} started, uptime 0s, {} pipelines",
+                    d.node_id(),
+                    d.config_ref().pipeline.len()
+                );
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        println!("\nshutdown signal received, stopping pipelines");
+                        d.abort_all();
+                    }
+                }
+                Ok(())
+            } else {
+                let path = file
+                    .map(PathBuf::from)
+                    .unwrap_or_else(crate::daemon::default_topology_path);
+                let cfg = load_config(&path)?;
+                println!("loaded {} ({} pipelines)", path.display(), cfg.pipeline.len());
+                for p in &cfg.pipeline {
+                    println!(
+                        "  - {}: {} -> {} (batch={}, watch={})",
+                        p.name,
+                        p.from,
+                        p.to.join(","),
+                        p.batch_size,
+                        p.watch
+                    );
+                }
+                Ok(())
+            }
         }
-        Command::Node { action } => {
-            eprintln!("[scaffold] tos node {action:?}");
-            eprintln!("[scaffold] real implementation in S5");
-            Ok(())
-        }
+        Command::Node { action } => match action {
+            NodeAction::Start => {
+                let path = crate::daemon::default_topology_path();
+                let cfg = load_config(&path)?;
+                let mut d = Daemon::new(cfg);
+                d.start().await?;
+                println!("node {} started, {} pipelines", d.node_id(), d.config_ref().pipeline.len());
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        println!("\nstopping");
+                        d.abort_all();
+                    }
+                }
+                Ok(())
+            }
+            NodeAction::Stop => {
+                println!("no PID file: stop runs against an active foreground process (Ctrl+C)");
+                Ok(())
+            }
+            NodeAction::Status => {
+                println!("node status is foreground-only in v1.0");
+                Ok(())
+            }
+            NodeAction::Id => {
+                let id = crate::daemon::generate_node_id_pub();
+                println!("{id}");
+                Ok(())
+            }
+        },
         Command::Status => {
-            eprintln!("[scaffold] tos status (no active sessions)");
+            println!("status is foreground-only in v1.0");
             Ok(())
         }
         Command::Log { follow } => {
-            eprintln!("[scaffold] tos log --follow {follow}");
+            if follow {
+                println!("log --follow is not implemented; use stdout from `tos topology --start`");
+            } else {
+                println!("log tail is not implemented; see stdout from `tos topology --start`");
+            }
             Ok(())
         }
     }

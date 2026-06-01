@@ -3,6 +3,7 @@ pub mod messages;
 pub mod handshake;
 pub mod stream;
 pub mod transport;
+pub mod quic;
 pub mod session;
 pub mod runner;
 pub mod watch;

@@ -23,9 +23,16 @@ tos-proto = { path = "../tos-proto" }
 tos-adapter-json = { path = "../tos-adapters/json" }
 tos-adapter-postgres = { path = "../tos-adapters/postgres" }
 tos-adapter-redis = { path = "../tos-adapters/redis" }
-tokio = { workspace = true }
+tos-adapter-mysql = { path = "../tos-adapters/mysql" }
+tos-adapter-sqlite = { path = "../tos-adapters/sqlite" }
+tos-adapter-mongodb = { path = "../tos-adapters/mongodb" }
+tos-adapter-yaml = { path = "../tos-adapters/yaml" }
+tos-adapter-txt = { path = "../tos-adapters/txt" }
+tokio = { workspace = true, features = ["signal"] }
 futures = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
@@ -34,3 +41,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2"
+predicates = "3"

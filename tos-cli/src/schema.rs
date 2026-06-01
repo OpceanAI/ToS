@@ -1,0 +1,263 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::{anyhow, Context, Result};
+use tos_core::adapter::TosAdapter;
+use tos_core::sdl::{infer_schema_csv, infer_schema_json, parse_sdl, to_sdl, validate, write_diff_table, TosSchema};
+use tos_core::MockAdapter;
+
+use crate::uri::{parse, Scheme};
+
+pub async fn pull(uri_str: &str) -> Result<()> {
+    let uri = parse(uri_str).context("invalid URI")?;
+    let adapter: Arc<dyn TosAdapter> = build_for_pull(&uri).await?;
+    let schema = adapter
+        .read_schema()
+        .await
+        .map_err(|e| anyhow!("read_schema failed: {e}"))?;
+    let sdl = to_sdl(&schema);
+    print!("{sdl}");
+    Ok(())
+}
+
+pub async fn push(file: &Path, uri_str: &str) -> Result<()> {
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("reading SDL file {}", file.display()))?;
+    let schema = parse_sdl(&text).map_err(|e| anyhow!("SDL parse error: {e}"))?;
+    validate(&schema).map_err(|e| anyhow!("SDL validation error: {e}"))?;
+    let uri = parse(uri_str).context("invalid URI")?;
+
+    match uri.scheme {
+        Scheme::Json | Scheme::Yaml | Scheme::Txt => {
+            let sidecar = sidecar_for(&uri.dataset, file);
+            std::fs::write(&sidecar, to_sdl(&schema))
+                .with_context(|| format!("writing sidecar {}", sidecar.display()))?;
+            println!(
+                "schema written to {} (sidecar of {})",
+                sidecar.display(),
+                uri.dataset
+            );
+            Ok(())
+        }
+        Scheme::Postgres | Scheme::Mysql | Scheme::Sqlite => {
+            for table in schema.tables.values() {
+                let stmt = generate_create_table(&uri.scheme, table);
+                println!("{stmt};");
+            }
+            println!("# dry-run: not executed against the database");
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "schema push not supported for scheme `{}` in v1.0",
+            uri.scheme.as_str()
+        )),
+    }
+}
+
+pub async fn infer(path: &Path) -> Result<()> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let table_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("inferred")
+        .to_string();
+    let schema = match ext.as_str() {
+        "json" | "jsonl" | "ndjson" => {
+            let records = parse_json_records(&text);
+            if records.is_empty() {
+                return Err(anyhow!("no JSON records found in {}", path.display()));
+            }
+            let tbl = infer_schema_json(table_name, records)
+                .map_err(|e| anyhow!("infer_schema_json: {e}"))?;
+            TosSchema {
+                name: "inferred".into(),
+                version: "0.1.0".into(),
+                tables: [(tbl.name.clone(), tbl)].into_iter().collect(),
+            }
+        }
+        "csv" | "tsv" | "txt" => {
+            let delim = if ext == "tsv" { b'\t' } else { b',' };
+            let mut reader = text.as_bytes();
+            let tbl = infer_schema_csv(table_name, &mut reader, true, delim)
+                .map_err(|e| anyhow!("infer_schema_csv: {e}"))?;
+            TosSchema {
+                name: "inferred".into(),
+                version: "0.1.0".into(),
+                tables: [(tbl.name.clone(), tbl)].into_iter().collect(),
+            }
+        }
+        "toml" | "tos" => {
+            parse_sdl(&text).map_err(|e| anyhow!("SDL parse error: {e}"))?
+        }
+        other => {
+            return Err(anyhow!(
+                "cannot infer from extension `.{other}` (use .json, .csv, .tsv, or .toml)"
+            ));
+        }
+    };
+    print!("{}", to_sdl(&schema));
+    Ok(())
+}
+
+pub fn diff(file1: &Path, file2: &Path) -> Result<()> {
+    let a = load_sdl(file1)?;
+    let b = load_sdl(file2)?;
+    let mut out = String::new();
+    out.push_str(&format!("left  = {}\n", file1.display()));
+    out.push_str(&format!("right = {}\n\n", file2.display()));
+
+    let mut left_tables: Vec<&str> = a.tables.keys().map(|s| s.as_str()).collect();
+    let mut right_tables: Vec<&str> = b.tables.keys().map(|s| s.as_str()).collect();
+    left_tables.sort();
+    right_tables.sort();
+
+    let mut all: Vec<&str> = left_tables.clone();
+    for t in &right_tables {
+        if !all.contains(t) {
+            all.push(t);
+        }
+    }
+    all.sort();
+
+    for tname in all {
+        match (a.tables.get(tname), b.tables.get(tname)) {
+            (Some(ta), Some(tb)) => {
+                write_diff_table(&mut out, &format!("table `{tname}`"), ta, tb);
+            }
+            (Some(ta), None) => {
+                out.push_str(&format!("--- table `{tname}` (only in left)\n"));
+                out.push_str(&format!("  fields: {}\n", ta.fields.len()));
+            }
+            (None, Some(tb)) => {
+                out.push_str(&format!("+++ table `{tname}` (only in right)\n"));
+                out.push_str(&format!("  fields: {}\n", tb.fields.len()));
+            }
+            (None, None) => {}
+        }
+        out.push('\n');
+    }
+    print!("{out}");
+    Ok(())
+}
+
+pub fn validate_file(file: &Path) -> Result<()> {
+    let schema = load_sdl(file)?;
+    validate(&schema).map_err(|e| anyhow!("SDL validation error: {e}"))?;
+    println!("OK: {} ({} tables)", file.display(), schema.tables.len());
+    for (name, table) in &schema.tables {
+        println!("  - {name}: {} fields", table.fields.len());
+    }
+    Ok(())
+}
+
+fn load_sdl(file: &Path) -> Result<TosSchema> {
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("reading {}", file.display()))?;
+    parse_sdl(&text).map_err(|e| anyhow!("SDL parse error in {}: {e}", file.display()))
+}
+
+fn sidecar_for(dataset: &str, sdl_path: &Path) -> PathBuf {
+    let candidate = PathBuf::from(dataset);
+    if candidate.exists() {
+        let stem = candidate
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("schema");
+        let parent = candidate.parent().unwrap_or_else(|| Path::new("."));
+        return parent.join(format!("{stem}.tos"));
+    }
+    if let Some(parent) = candidate.parent() {
+        if !parent.as_os_str().is_empty() && parent.exists() {
+            let stem = candidate
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("schema");
+            return parent.join(format!("{stem}.tos"));
+        }
+    }
+    let mut p = sdl_path.to_path_buf();
+    p.set_extension("tos");
+    p
+}
+
+fn parse_json_records(text: &str) -> Vec<serde_json::Value> {
+    let trimmed = text.trim();
+    if trimmed.starts_with('[') {
+        serde_json::from_str::<Vec<serde_json::Value>>(trimmed).unwrap_or_default()
+    } else {
+        let mut out = Vec::new();
+        for line in trimmed.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if v.is_object() {
+                    out.push(v);
+                }
+            }
+        }
+        out
+    }
+}
+
+fn generate_create_table(scheme: &Scheme, table: &tos_core::sdl::TosTable) -> String {
+    use tos_core::sdl::tos_type_name;
+    let mut cols: Vec<String> = Vec::new();
+    for f in &table.fields {
+        let mut col = format!("  {} {}", quote_ident(scheme, &f.name), tos_type_name(&f.ty));
+        if !f.nullable {
+            col.push_str(" NOT NULL");
+        }
+        if f.primary {
+            col.push_str(" PRIMARY KEY");
+        }
+        if f.unique {
+            col.push_str(" UNIQUE");
+        }
+        cols.push(col);
+    }
+    format!(
+        "CREATE TABLE {} (\n{}\n)",
+        quote_ident(scheme, &table.name),
+        cols.join(",\n")
+    )
+}
+
+fn quote_ident(scheme: &Scheme, name: &str) -> String {
+    match scheme {
+        Scheme::Mysql => format!("`{name}`"),
+        _ => format!("\"{name}\""),
+    }
+}
+
+async fn build_for_pull(uri: &crate::uri::Uri) -> Result<Arc<dyn TosAdapter>> {
+    use tos_adapter_json::JsonAdapter;
+    match uri.scheme {
+        Scheme::Mock => {
+            let schema = crate::cmd::schema_for_dataset(&uri.dataset);
+            let records = (0..crate::uri::param_u64(uri, "records", 0))
+                .map(|i| crate::cmd::synthetic_record(&uri.dataset, i))
+                .collect::<Vec<_>>();
+            Ok(Arc::new(MockAdapter::with_records(
+                format!("pull:{}", uri.dataset),
+                schema,
+                records,
+            )))
+        }
+        Scheme::Json => Ok(Arc::new(
+            JsonAdapter::open(format!("pull:{}", uri.dataset), std::path::Path::new(&uri.dataset))
+                .map_err(|e| anyhow!("json open: {e}"))?,
+        )),
+        _ => Err(anyhow!(
+            "schema pull not supported for scheme `{}` in v1.0",
+            uri.scheme.as_str()
+        )),
+    }
+}
