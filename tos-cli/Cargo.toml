@@ -20,6 +20,8 @@ tos-core = { path = "../tos-core" }
 tos-crypto = { path = "../tos-crypto" }
 tos-wire = { path = "../tos-wire" }
 tos-proto = { path = "../tos-proto" }
+tos-adapter-json = { path = "../tos-adapters/json" }
+tos-adapter-postgres = { path = "../tos-adapters/postgres" }
 tokio = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }

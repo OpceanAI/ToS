@@ -48,7 +48,7 @@ impl SessionRunner {
         table: &str,
     ) -> ProtoResult<RunStats>
     where
-        A: TosAdapter + 'static,
+        A: TosAdapter + ?Sized + 'static,
     {
         let started = Instant::now();
         let dial = TcpTransport::dial();
@@ -175,7 +175,7 @@ impl SessionRunner {
         dest: Arc<A>,
     ) -> ProtoResult<RunStats>
     where
-        A: TosAdapter + 'static,
+        A: TosAdapter + ?Sized + 'static,
     {
         let started = Instant::now();
         let (mut stream, _peer) = listener.accept().await?;
@@ -241,8 +241,15 @@ impl SessionRunner {
                     let payload = bincode::serialize(&b)
                         .map_err(crate::error::proto_error_from_bincode)?;
                     bytes_received += payload.len() as u64 + 4;
-                    let _records: Vec<TosValue> = decode_batch(&b)?;
-                    let _ = dest.write_records("ignored", Box::pin(futures::stream::empty())).await;
+                    let records: Vec<TosValue> = decode_batch(&b)?;
+                    if !records.is_empty() {
+                        let stream = futures::stream::iter(records.into_iter().map(Ok::<_, BoxedErr>));
+                        let n = dest
+                            .write_records("ignored", Box::pin(stream))
+                            .await
+                            .map_err(adapter_err)?;
+                        debug_assert_eq!(n, b.count as u64);
+                    }
                     total_records += b.count as u64;
                     total_batches += 1;
                     let ack = Ack { batch_id: b.batch_id };
@@ -498,5 +505,45 @@ mod tests {
         assert_eq!(c_stats.total_batches, 5);
         assert_eq!(s_stats.total_records, 500);
         assert_eq!(s_stats.total_batches, 5);
+    }
+
+    #[tokio::test]
+    async fn session_e2e_actually_writes_to_dest() {
+        use std::sync::Arc;
+        let src = Arc::new(MockAdapter::with_records(
+            "src",
+            empty_schema(),
+            sample_records(7),
+        ));
+        let dst = Arc::new(MockAdapter::new("dst", empty_schema()));
+        let initial_dst_len = dst.len();
+        assert_eq!(initial_dst_len, 0);
+
+        let listener = TcpTransport::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let id = make_identity();
+        let runner = SessionRunner::new(id, 3);
+        let dst_for_server = dst.clone();
+        let server = tokio::spawn(async move {
+            runner.run_server(listener, dst_for_server).await
+        });
+
+        let id2 = make_identity();
+        let runner_c = SessionRunner::new(id2, 3);
+        let src_c = src.clone();
+        let dst_c = dst.clone();
+        let client = tokio::spawn(async move {
+            runner_c.run_client(addr, src_c, dst_c, "t").await
+        });
+
+        let (s, c) = tokio::join!(server, client);
+        let _ = s.unwrap().unwrap();
+        let _ = c.unwrap().unwrap();
+        assert_eq!(
+            dst.len(),
+            7,
+            "server should have written 7 records to the dest adapter"
+        );
     }
 }

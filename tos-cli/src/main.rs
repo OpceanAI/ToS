@@ -4,7 +4,7 @@ mod uri;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::cmd::push_mock;
+use crate::cmd::push;
 
 #[derive(Parser, Debug)]
 #[command(name = "tos", version, about = "Translation of Service: P2P data sync")]
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Push { from, to, table } => {
-            match push_mock(&from, &to, table.as_deref()).await {
+            match push(&from, &to, table.as_deref()).await {
                 Ok(stats) => {
                     println!(
                         "pushed {} records ({} batches, {} bytes) in {}ms",

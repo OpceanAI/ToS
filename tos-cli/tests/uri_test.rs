@@ -36,15 +36,24 @@ fn parse_unknown_scheme() {
 }
 
 #[test]
-fn parse_unsupported_scheme_postgres() {
-    let err = parse("postgres://localhost/db").unwrap_err();
-    assert!(matches!(err, tos_cli::uri::UriError::UnsupportedScheme(ref s, _) if s == "postgres"));
+fn parse_unsupported_scheme_mysql() {
+    let err = parse("mysql://localhost/db").unwrap_err();
+    assert!(matches!(err, tos_cli::uri::UriError::UnsupportedScheme(ref s, _) if s == "mysql"));
 }
 
 #[test]
-fn parse_unsupported_scheme_json() {
-    let err = parse("json:///tmp/data.json").unwrap_err();
-    assert!(matches!(err, tos_cli::uri::UriError::UnsupportedScheme(ref s, _) if s == "json"));
+fn parse_postgres_is_supported() {
+    let u = parse("postgres://user:pass@host:5432/mydb?table=users").unwrap();
+    assert_eq!(u.scheme, Scheme::Postgres);
+    assert_eq!(u.dataset, "user:pass@host:5432/mydb");
+    assert_eq!(u.params.get("table").unwrap(), "users");
+}
+
+#[test]
+fn parse_json_is_supported() {
+    let u = parse("json:///tmp/data.json").unwrap();
+    assert_eq!(u.scheme, Scheme::Json);
+    assert_eq!(u.dataset, "/tmp/data.json");
 }
 
 #[test]

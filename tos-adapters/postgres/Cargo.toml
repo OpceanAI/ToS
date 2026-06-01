@@ -5,10 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "ToS adapter: PostgreSQL (scaffold)"
+description = "ToS adapter: PostgreSQL (read-side)"
 
 [dependencies]
 tos-core = { path = "../../tos-core" }
-async-trait = { workspace = true }
+tokio = { workspace = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros", "json", "chrono", "uuid"] }
+serde_json = { workspace = true }
+serde = { workspace = true }
+futures = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+async-trait = { workspace = true }
+async-stream = "0.3"
+
+[dev-dependencies]
+tokio = { workspace = true }

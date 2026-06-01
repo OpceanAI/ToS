@@ -43,8 +43,11 @@ impl Scheme {
         }
     }
 
-    pub fn is_supported_in_v02(&self) -> bool {
-        matches!(self, Scheme::Mock)
+    pub fn is_supported_in_v01(&self) -> bool {
+        matches!(
+            self,
+            Scheme::Mock | Scheme::Json | Scheme::Postgres
+        )
     }
 }
 
@@ -74,14 +77,14 @@ pub fn parse(s: &str) -> Result<Uri, UriError> {
     let (scheme_str, rest) = split_scheme(s)?;
     let scheme = Scheme::parse(&scheme_str)
         .ok_or_else(|| UriError::UnknownScheme(scheme_str.clone()))?;
-    if !scheme.is_supported_in_v02() {
+    if !scheme.is_supported_in_v01() {
         return Err(UriError::UnsupportedScheme(
             scheme.as_str().to_string(),
             supported_schemes_hint(scheme.as_str()),
         ));
     }
     let (path, query) = split_query(&rest);
-    let dataset = path.trim_start_matches('/').trim().to_string();
+    let dataset = path.trim().to_string();
     if dataset.is_empty() {
         return Err(UriError::MissingDataset);
     }
@@ -132,12 +135,10 @@ fn parse_query(q: &str) -> HashMap<String, String> {
 
 fn supported_schemes_hint(scheme: &str) -> &'static str {
     match scheme {
-        "postgres" | "postgresql" => "S3 (v0.1 PoC)",
         "mysql" => "S4 (v0.5)",
         "sqlite" => "S5 (v1.0)",
         "mongodb" => "S5 (v1.0)",
         "redis" => "S4 (v0.5)",
-        "json" => "S3 (v0.1 PoC)",
         "yaml" | "yml" => "S5 (v1.0)",
         "txt" => "S5 (v1.0)",
         _ => "later session",
@@ -191,15 +192,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_unsupported_scheme_postgres() {
-        let err = parse("postgres://localhost/db").unwrap_err();
-        assert!(matches!(err, UriError::UnsupportedScheme(ref s, _) if s == "postgres"));
+    fn parse_unsupported_scheme_mysql() {
+        let err = parse("mysql://localhost/db").unwrap_err();
+        assert!(matches!(err, UriError::UnsupportedScheme(ref s, _) if s == "mysql"));
     }
 
     #[test]
-    fn parse_unsupported_scheme_json() {
-        let err = parse("json:///tmp/data.json").unwrap_err();
-        assert!(matches!(err, UriError::UnsupportedScheme(ref s, _) if s == "json"));
+    fn parse_postgres_now_supported() {
+        let u = parse("postgres://user:pass@host:5432/mydb?table=users").unwrap();
+        assert_eq!(u.scheme, Scheme::Postgres);
+        assert_eq!(u.dataset, "user:pass@host:5432/mydb");
+        assert_eq!(u.params.get("table").unwrap(), "users");
+    }
+
+    #[test]
+    fn parse_json_now_supported() {
+        let u = parse("json:///tmp/data.json").unwrap();
+        assert_eq!(u.scheme, Scheme::Json);
+        assert_eq!(u.dataset, "/tmp/data.json");
     }
 
     #[test]

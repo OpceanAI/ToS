@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
-use tos_core::adapter::TosValue;
+use tos_adapter_json::JsonAdapter;
+use tos_adapter_postgres::PostgresAdapter;
+use tos_core::adapter::{TosAdapter, TosValue};
 use tos_core::sdl::TosSchema;
 use tos_core::MockAdapter;
 use tos_crypto::Identity;
@@ -17,9 +20,8 @@ pub fn build_mock_adapter(uri: &Uri, role: &str) -> Result<Arc<MockAdapter>> {
     let schema = schema_for_dataset(&uri.dataset);
     if uri.scheme != Scheme::Mock {
         return Err(anyhow!(
-            "scheme `{}` not supported in v0.2 ({} side)",
-            uri.scheme.as_str(),
-            role
+            "internal: build_mock_adapter called with scheme `{}`",
+            uri.scheme.as_str()
         ));
     }
     let n = param_u64(uri, "records", 0);
@@ -32,6 +34,61 @@ pub fn build_mock_adapter(uri: &Uri, role: &str) -> Result<Arc<MockAdapter>> {
         schema,
         records,
     )))
+}
+
+pub fn build_json_adapter(uri: &Uri, role: &str) -> Result<Arc<JsonAdapter>> {
+    if uri.scheme != Scheme::Json {
+        return Err(anyhow!(
+            "internal: build_json_adapter called with scheme `{}`",
+            uri.scheme.as_str()
+        ));
+    }
+    let path = PathBuf::from(&uri.dataset);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating parent dir {}", parent.display()))?;
+        }
+    }
+    let adapter = if path.exists() {
+        JsonAdapter::open(format!("{role}:{}", uri.dataset), &path)?
+    } else {
+        JsonAdapter::new(format!("{role}:{}", uri.dataset), &path)
+    };
+    Ok(Arc::new(adapter))
+}
+
+pub async fn build_postgres_adapter(
+    uri: &Uri,
+    role: &str,
+) -> Result<Arc<PostgresAdapter>> {
+    if uri.scheme != Scheme::Postgres {
+        return Err(anyhow!(
+            "internal: build_postgres_adapter called with scheme `{}`",
+            uri.scheme.as_str()
+        ));
+    }
+    let url = format!("postgres://{}", uri.dataset);
+    let adapter = PostgresAdapter::connect(&url)
+        .await
+        .with_context(|| format!("connecting to {url}"))?;
+    let _ = role;
+    Ok(Arc::new(adapter))
+}
+
+pub async fn build_adapter(uri: &Uri, role: &str) -> Result<Arc<dyn TosAdapter>> {
+    match &uri.scheme {
+        Scheme::Mock => Ok(build_mock_adapter(uri, role)? as Arc<dyn TosAdapter>),
+        Scheme::Json => Ok(build_json_adapter(uri, role)? as Arc<dyn TosAdapter>),
+        Scheme::Postgres => {
+            Ok(build_postgres_adapter(uri, role).await? as Arc<dyn TosAdapter>)
+        }
+        other => Err(anyhow!(
+            "scheme `{}` not supported in v0.1 ({} side)",
+            other.as_str(),
+            role
+        )),
+    }
 }
 
 pub fn synthetic_record(dataset: &str, i: u64) -> TosValue {
@@ -97,19 +154,15 @@ pub fn schema_for_dataset(name: &str) -> TosSchema {
     s
 }
 
-pub async fn push_mock(from_uri: &str, to_uri: &str, table: Option<&str>) -> Result<RunStats> {
+pub async fn push(from_uri: &str, to_uri: &str, table: Option<&str>) -> Result<RunStats> {
     let from = parse(from_uri).context("parsing --from")?;
     let to = parse(to_uri).context("parsing --to")?;
-    if from.scheme != Scheme::Mock || to.scheme != Scheme::Mock {
-        return Err(anyhow!(
-            "tos push v0.2 only supports mock:// URIs (got {} -> {})",
-            from.scheme.as_str(),
-            to.scheme.as_str()
-        ));
-    }
-    let src = build_mock_adapter(&from, "source")?;
-    let dst = build_mock_adapter(&to, "dest")?;
-    let table_name = table.unwrap_or("rows").to_string();
+    let src = build_adapter(&from, "source").await?;
+    let dst = build_adapter(&to, "dest").await?;
+    let table_name = table
+        .map(|s| s.to_string())
+        .or_else(|| from.params.get("table").cloned())
+        .unwrap_or_else(|| "rows".to_string());
 
     let listener = TcpTransport::bind("127.0.0.1:0")
         .await
@@ -147,4 +200,98 @@ pub async fn push_mock(from_uri: &str, to_uri: &str, table: Option<&str>) -> Res
         .context("client run failed")?;
 
     Ok(client_stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn uri(scheme: Scheme, dataset: &str, params: Vec<(&str, &str)>) -> Uri {
+        Uri {
+            scheme,
+            dataset: dataset.to_string(),
+            params: params
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    #[test]
+    fn build_mock_returns_correct_count() {
+        let u = uri(Scheme::Mock, "demo", vec![("records", "5")]);
+        let a = build_mock_adapter(&u, "src").unwrap();
+        assert_eq!(a.len(), 5);
+    }
+
+    #[test]
+    fn build_mock_with_zero_records() {
+        let u = uri(Scheme::Mock, "demo", vec![]);
+        let a = build_mock_adapter(&u, "src").unwrap();
+        assert_eq!(a.len(), 0);
+    }
+
+    #[test]
+    fn build_mock_wrong_scheme_panics_safe() {
+        let u = uri(Scheme::Json, "x", vec![]);
+        let res = build_mock_adapter(&u, "src");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn build_json_new_file() {
+        let p = std::env::temp_dir().join(format!(
+            "tos-cli-build-json-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&p);
+        let u = uri(Scheme::Json, &p.to_string_lossy(), vec![]);
+        let a = build_json_adapter(&u, "src").unwrap();
+        assert!(a.is_empty());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn build_json_loads_existing() {
+        let p = std::env::temp_dir().join(format!(
+            "tos-cli-build-json-existing-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&p, r#"[{"id":1},{"id":2},{"id":3}]"#).unwrap();
+        let u = uri(Scheme::Json, &p.to_string_lossy(), vec![]);
+        let a = build_json_adapter(&u, "src").unwrap();
+        assert_eq!(a.len(), 3);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[tokio::test]
+    async fn build_adapter_dispatches_mock() {
+        let u = uri(Scheme::Mock, "x", vec![("records", "3")]);
+        let a = build_adapter(&u, "src").await.unwrap();
+        assert_eq!(a.name(), "src:x");
+    }
+
+    #[tokio::test]
+    async fn build_adapter_dispatches_json() {
+        let p = std::env::temp_dir().join(format!(
+            "tos-cli-disp-json-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&p);
+        let u = uri(Scheme::Json, &p.to_string_lossy(), vec![]);
+        let a = build_adapter(&u, "src").await.unwrap();
+        assert_eq!(a.name(), format!("src:{}", p.to_string_lossy()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[tokio::test]
+    async fn build_adapter_rejects_unsupported() {
+        let u = uri(Scheme::Mysql, "localhost/db", vec![]);
+        let res = build_adapter(&u, "src").await;
+        assert!(res.is_err());
+        let err = res.err().unwrap();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("mysql"), "error should mention scheme: {msg}");
+    }
 }
