@@ -39,4 +39,4 @@ pub use sign::{
     public_key_bytes, sign, verify, verifying_key_from_bytes, PUBLIC_KEY_SIZE, SIGNATURE_SIZE,
     SECRET_KEY_SIZE,
 };
-pub use sig::{Ed25519Signer, SigId, Sign};
+pub use sig::{Ed25519Signer, MlDsa65Signer, SigId, Sign};

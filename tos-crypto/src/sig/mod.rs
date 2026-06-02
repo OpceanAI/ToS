@@ -44,7 +44,7 @@ impl SigId {
     pub fn sk_size(&self) -> usize {
         match self {
             SigId::Ed25519 => 32,
-            SigId::MlDsa65 => 4032,
+            SigId::MlDsa65 => 32,
             SigId::SlhDsa128s => 64,
             SigId::FrostEd25519 => 32,
         }
@@ -91,8 +91,10 @@ pub trait Sign: Send + Sync + 'static {
 }
 
 pub mod ed25519;
+pub mod ml_dsa65;
 
 pub use ed25519::Ed25519Signer;
+pub use ml_dsa65::MlDsa65Signer;
 
 #[cfg(test)]
 mod tests {

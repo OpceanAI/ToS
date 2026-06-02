@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cipher::{Cipher, CipherId, ChaCha20Poly1305Cipher, XChaCha20Poly1305Cipher};
 use crate::kex::{Kex, KexId, MlKem768Kex, X25519Kex, XWingKex};
-use crate::sig::{Ed25519Signer, Sign, SigId};
+use crate::sig::{Ed25519Signer, MlDsa65Signer, Sign, SigId};
 
 /// A bundle of algorithm identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -65,7 +65,8 @@ impl AlgorithmSet {
     pub fn sign_impl(&self) -> Box<dyn Sign> {
         match self.sig {
             SigId::Ed25519 => Box::new(Ed25519Signer),
-            other => panic!("sig {:?} not yet implemented in v0.2 Phase 1", other),
+            SigId::MlDsa65 => Box::new(MlDsa65Signer),
+            other => panic!("sig {:?} not yet implemented in v0.2 Phase 2", other),
         }
     }
 }
@@ -119,5 +120,33 @@ mod tests {
         assert_eq!(s.cipher_impl().id(), CipherId::ChaCha20Poly1305);
         assert_eq!(s.kex_impl().id(), KexId::X25519);
         assert_eq!(s.sign_impl().id(), SigId::Ed25519);
+    }
+
+    #[test]
+    fn pqc_factory_dispatch() {
+        let s = AlgorithmSet::v0_2_pqc();
+        assert_eq!(s.cipher_impl().id(), CipherId::ChaCha20Poly1305);
+        assert_eq!(s.kex_impl().id(), KexId::XWing);
+        assert_eq!(s.sign_impl().id(), SigId::MlDsa65);
+    }
+
+    #[test]
+    fn pqc_sign_verify_roundtrip() {
+        let s = AlgorithmSet::v0_2_pqc();
+        let signer = s.sign_impl();
+        let (pk, sk) = signer.generate().expect("pqc sign gen");
+        let msg = b"tos v0.2 PQC end-to-end";
+        let sig = signer.sign(&sk, msg).expect("pqc sign");
+        signer.verify(&pk, msg, &sig).expect("pqc verify");
+    }
+
+    #[test]
+    fn pqc_kex_roundtrip() {
+        let s = AlgorithmSet::v0_2_pqc();
+        let kex = s.kex_impl();
+        let (pk_b, sk_b) = kex.generate().expect("pqc kex gen b");
+        let (ct_a, ss_a) = kex.encapsulate(&pk_b).expect("pqc encap");
+        let ss_b = kex.decapsulate(&sk_b, &ct_a).expect("pqc decap");
+        assert_eq!(ss_a, ss_b);
     }
 }

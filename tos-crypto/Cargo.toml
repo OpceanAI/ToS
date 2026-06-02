@@ -27,6 +27,7 @@ ml-dsa = { workspace = true }
 rand_core = { workspace = true }
 getrandom = { workspace = true }
 sha3 = { workspace = true }
+signature = "2"
 
 [dev-dependencies]
 proptest = { workspace = true }
