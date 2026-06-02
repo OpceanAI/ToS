@@ -20,6 +20,9 @@ pub enum CryptoError {
     #[error("decryption failed: {0}")]
     Decrypt(String),
 
+    #[error("key derivation failed: {0}")]
+    Kdf(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
