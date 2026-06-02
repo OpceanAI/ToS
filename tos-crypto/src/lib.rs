@@ -33,7 +33,7 @@ pub use exchange::{derive_session_key, EphemeralKeyPair, SHARED_SECRET_SIZE};
 pub use hash::{blake3_derive_context, blake3_hash, blake3_keyed, verify_hash};
 pub use identity::{Identity, NodeId, NODE_ID_SIZE};
 pub use kdf::{hkdf_sha256, labels as kdf_labels};
-pub use kex::{Kex, KexId, X25519Kex};
+pub use kex::{Kex, KexId, MlKem768Kex, X25519Kex, XWingKex};
 pub use registry::AlgorithmSet;
 pub use sign::{
     public_key_bytes, sign, verify, verifying_key_from_bytes, PUBLIC_KEY_SIZE, SIGNATURE_SIZE,

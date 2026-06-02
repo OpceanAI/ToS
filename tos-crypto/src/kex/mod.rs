@@ -49,9 +49,9 @@ impl KexId {
     pub fn sk_size(&self) -> usize {
         match self {
             KexId::X25519 => 32,
-            KexId::MlKem512 => 1632,
-            KexId::MlKem768 => 2400,
-            KexId::MlKem1024 => 3168,
+            KexId::MlKem512 => 64,
+            KexId::MlKem768 => 64,
+            KexId::MlKem1024 => 64,
             KexId::XWing => 32,
         }
     }
@@ -131,9 +131,13 @@ pub(crate) fn check_len(name: &str, expected: usize, actual: usize) -> CryptoRes
     }
 }
 
+pub mod ml_kem768;
 pub mod x25519;
+pub mod xwing;
 
+pub use ml_kem768::MlKem768Kex;
 pub use x25519::X25519Kex;
+pub use xwing::XWingKex;
 
 #[cfg(test)]
 mod tests {

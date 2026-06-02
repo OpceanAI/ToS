@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cipher::{Cipher, CipherId, ChaCha20Poly1305Cipher, XChaCha20Poly1305Cipher};
-use crate::kex::{Kex, KexId, X25519Kex};
+use crate::kex::{Kex, KexId, MlKem768Kex, X25519Kex, XWingKex};
 use crate::sig::{Ed25519Signer, Sign, SigId};
 
 /// A bundle of algorithm identifiers.
@@ -56,7 +56,9 @@ impl AlgorithmSet {
     pub fn kex_impl(&self) -> Box<dyn Kex> {
         match self.kex {
             KexId::X25519 => Box::new(X25519Kex),
-            other => panic!("kex {:?} not yet implemented in v0.2 Phase 1", other),
+            KexId::MlKem768 => Box::new(MlKem768Kex),
+            KexId::XWing => Box::new(XWingKex),
+            other => panic!("kex {:?} not yet implemented in v0.2 Phase 2", other),
         }
     }
 
