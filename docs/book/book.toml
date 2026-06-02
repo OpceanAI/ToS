@@ -1,0 +1,25 @@
+[book]
+title = "ToS — Translation of Service"
+description = "P2P typed data sync: user guide, architecture, protocol reference"
+authors = ["OpceanAI"]
+language = "en"
+multilingual = false
+src = "src"
+git-repository-url = "https://github.com/OpceanAI/ToS"
+edit-url-template = "https://github.com/OpceanAI/ToS/edit/main/docs/book/{path}"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/OpceanAI/ToS"
+edit-url-template = "https://github.com/OpceanAI/ToS/edit/main/docs/book/{path}"
+site-url = "/tos/"
+no-prepend-git = true
+mathjax-support = false
+copy-fonts = true
+additional-css = []
+additional-js = []
+
+[output.html.fold]
+enable = true
+level = 1

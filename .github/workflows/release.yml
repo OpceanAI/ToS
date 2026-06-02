@@ -1,0 +1,141 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v1.0.0)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.xz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.xz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.xz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.xz
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-latest
+            archive: tar.xz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.xz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.xz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'armv7-unknown-linux-musleabihf'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+          mkdir -p ~/.cargo
+          printf '[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-gnu-gcc"\n[target.armv7-unknown-linux-musleabihf]\nlinker = "arm-linux-gnueabihf-gcc"\n' > ~/.cargo/config.toml
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get install -y musl-tools
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin tos
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p release
+          BIN=target/${{ matrix.target }}/release/tos
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          cp "$BIN" release/
+          chmod +x release/tos
+          cp scripts/tos.1 release/
+          cd release
+          if [ "${{ matrix.archive }}" = "tar.xz" ]; then
+            tar -cJf ../tos-${{ matrix.target }}.tar.xz tos tos.1
+          else
+            7z a ../tos-${{ matrix.target }}.zip tos.exe tos.1 || zip ../tos-${{ matrix.target }}.zip tos.exe tos.1
+          fi
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: tos-${{ matrix.target }}
+          path: tos-${{ matrix.target }}.${{ matrix.archive }}
+
+  deb:
+    name: deb package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --bin tos
+      - run: ./scripts/make-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/*.deb
+
+  publish:
+    name: github release
+    needs: [build, deb]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Generate notes
+        run: |
+          {
+            echo "## ToS ${{ github.ref_name }}"
+            echo
+            echo "### Installation"
+            echo
+            echo '```bash'
+            echo "# Linux (musl, static)"
+            echo "curl -L https://github.com/OpceanAI/ToS/releases/download/${{ github.ref_name }}/tos-x86_64-unknown-linux-musl.tar.xz | tar -xJ"
+            echo "sudo mv tos /usr/local/bin/"
+            echo
+            echo "# Debian/Ubuntu"
+            echo "curl -L -O https://github.com/OpceanAI/ToS/releases/download/${{ github.ref_name }}/tos_${{ github.ref_name }}_amd64.deb"
+            echo "sudo dpkg -i tos_${{ github.ref_name }}_amd64.deb"
+            echo '```'
+            echo
+            echo "### Checksums"
+            echo
+            echo '```'
+            cd artifacts && find . -type f -exec sha256sum {} +
+            echo '```'
+          } > release-notes.md
+          cat release-notes.md
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            artifacts/**/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

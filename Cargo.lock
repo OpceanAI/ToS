@@ -3608,11 +3608,15 @@ dependencies = [
 name = "tos-proto"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bincode",
+ "blake3",
  "ed25519-dalek",
  "futures",
+ "hex",
  "quinn",
+ "rand 0.8.6",
  "rcgen",
  "serde",
  "serde_json",
@@ -3622,6 +3626,7 @@ dependencies = [
  "tos-crypto",
  "tos-wire",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

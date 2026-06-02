@@ -9,22 +9,120 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  RUSTUP_MAX_RETRIES: 3
 
 jobs:
-  check:
+  fmt:
+    name: rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-      - name: Format check
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install MariaDB / Postgres / Redis
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mariadb-server postgresql redis-server
+          sudo service mariadb start
+          sudo service postgresql start
+          sudo service redis-server start
+      - name: Create test users
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo -u postgres psql -c "CREATE USER tos WITH PASSWORD 'tos123' SUPERUSER;"
+          sudo mysql -e "CREATE USER 'tos'@'localhost' IDENTIFIED BY 'tos123'; GRANT ALL ON *.* TO 'tos'@'localhost';"
+      - run: cargo test --workspace --verbose
+      - run: cargo build --workspace --release --verbose
+
+  musl:
+    name: musl build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+            host: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            host: ubuntu-latest
+          - target: armv7-unknown-linux-musleabihf
+            host: ubuntu-latest
+    runs-on: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross-linker
+        if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'armv7-unknown-linux-musleabihf'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+      - name: Configure cargo for musl
+        if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'armv7-unknown-linux-musleabihf'
+        run: |
+          mkdir -p ~/.cargo
+          cat > ~/.cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-musl]
+          linker = "aarch64-linux-gnu-gcc"
+          [target.armv7-unknown-linux-musleabihf]
+          linker = "arm-linux-gnueabihf-gcc"
+          EOF
+      - name: Configure cargo for x86_64-musl
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get install -y musl-tools
       - name: Build
-        run: cargo build --workspace --verbose
-      - name: Test
-        run: cargo test --workspace --verbose
+        run: cargo build --release --target ${{ matrix.target }} --bin tos
+      - name: Verify static linkage
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: file target/${{ matrix.target }}/release/tos | grep -i statically
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tos-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/tos
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo tarpaulin --workspace --out Xml --output-dir coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/cobertura.xml

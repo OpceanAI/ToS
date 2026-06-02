@@ -1,0 +1,113 @@
+.TH TOS 1 "2026-06-01" "0.1.0" "Translation of Service"
+.SH NAME
+tos \- peer\-to\-peer typed data sync
+.SH SYNOPSIS
+.B tos
+[\fIglobal options\fR]
+\fIcommand
+[\fIcommand options\fR]
+[\fIarguments\fR]
+.SH DESCRIPTION
+ToS moves rows between any source and any destination (PostgreSQL,
+MySQL, SQLite, MongoDB, Redis, JSON, YAML, TXT, JSONL) using a typed
+schema description language. It can run as a one-shot CLI, a fan-out
+sync, or a long-running daemon driven by a TOML topology.
+.SH COMMANDS
+.TP
+.B push \-\-from <URI> \-\-to <URI> [\-\-table <NAME>]
+Read from the source URI and write every row to the destination URI.
+.TP
+.B sync \-\-from <URI> \-\-to <URI> [\fI--to <URI>\fR...] [\-\-watch]
+Like
+.BR push ,
+but writes to multiple destinations concurrently, continuing on
+per-destination errors.
+.TP
+.B schema pull|push|infer|diff|validate
+Inspect, propagate, derive, compare, or validate ToS SDL schemas.
+.TP
+.B topology show|validate
+Show or validate a TOML topology file.
+.TP
+.B node start|stop|status|id
+Run the daemon. \fBstart\fR reads \fI/etc/tos/topology.toml\fR (or
+\fB--config\fR), launches every pipeline in its own task, and blocks on
+\fBSIGINT\fR/\fBSIGTERM\fR.
+.TP
+.B status [\fI--config\fR]
+Show the loaded topology summary.
+.TP
+.B log [\fI--lines N\fR]
+Tail the tracing log.
+.TP
+.B help
+Print command-specific help.
+.SH URI SCHEMES
+.TP
+.B mock://<table>?records=N
+In-process synthetic source.
+.TP
+.B postgres://USER:PASS@HOST/DB?table=NAME[&schema=SCHEMA]
+Read or write a PostgreSQL table.
+.TP
+.B mysql://USER:PASS@HOST/DB?table=NAME
+Read or write a MySQL/MariaDB table.
+.TP
+.B sqlite:///path/to.db?table=NAME
+Read or write a SQLite file.
+.TP
+.B mongodb://HOST/DB?table=NAME
+Read or write a MongoDB collection.
+.TP
+.B redis://HOST:PORT?prefix=KEY_PREFIX
+Read or write Redis hashes, one hash per key.
+.TP
+.B json:///path/to.json
+Read or write a JSON file (array of objects).
+.TP
+.B jsonl:///path/to.jsonl
+Read or write a JSON Lines file (one object per line).
+.TP
+.B yaml:///path/to.yaml
+Read or write a YAML sequence of mappings.
+.TP
+.B txt:///path/to.txt?delimiter=|
+Read or write a delimited text file.
+.SH EXAMPLES
+.SS One-shot PostgreSQL → JSON
+.PP
+.nf
+tos push \\
+    \-\-from postgres://app:secret@db.local/app?table=users \\
+    \-\-to   json:///var/backup/users.json
+.fi
+.SS Fan-out with watch
+.PP
+.nf
+tos sync \\
+    \-\-from postgres://app:secret@db.local/app?table=orders \\
+    \-\-to   sqlite:///var/cache/orders.db?table=orders \\
+    \-\-to   redis://cache.local:6379?prefix=tos:orders \\
+    \-\-watch
+.fi
+.SS Run the daemon
+.PP
+.nf
+sudo systemctl start tos.service
+journalctl \-u tos \-f
+.fi
+.SH FILES
+.TP
+.I /etc/tos/topology.toml
+Default daemon topology.
+.TP
+.I /usr/local/share/man/man1/tos.1
+This manual page.
+.SH EXIT STATUS
+Returns 0 on success, 1 on protocol or schema error, 2 on usage error.
+.SH SEE ALSO
+.BR cargo (1),
+.BR sqlite3 (1),
+.BR psql (1)
+.PP
+Project home: <https://github.com/OpceanAI/ToS>
