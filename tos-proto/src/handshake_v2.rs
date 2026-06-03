@@ -590,4 +590,154 @@ mod tests {
         assert_eq!(client_keys.send_nonce, server_keys.recv_nonce);
         assert_eq!(client_keys.recv_nonce, server_keys.send_nonce);
     }
+
+    #[tokio::test]
+    async fn integration_v2_classical_full_e2e() {
+        // Full pipeline: handshake v2 (X25519+Ed25519) + encrypted session
+        // stream (ChaCha20-Poly1305). Client sends 100 messages, server
+        // echoes each back, asserting plaintext roundtrip.
+        use crate::session_v2::SessionV2;
+        let (mut a, mut b) = duplex(1024 * 1024);
+        let client = make_identity_classical(0x11);
+        let server = make_identity_classical(0x22);
+
+        let client_task = tokio::spawn(async move {
+            let (_ack, keys) =
+                perform_client_v2(&mut a, &client, AlgorithmSet::v0_2()).await.unwrap();
+            SessionV2::new(a, keys)
+        });
+        let server_task = tokio::spawn(async move {
+            let (_hello, keys) =
+                perform_server_v2(&mut b, &server, AlgorithmSet::v0_2()).await.unwrap();
+            SessionV2::new(b, keys)
+        });
+
+        let (mut client_session, mut server_session) =
+            tokio::try_join!(client_task, server_task).unwrap();
+
+        for i in 0..100u32 {
+            let msg = format!("classical ping #{i}");
+            client_session.send(msg.as_bytes()).await.unwrap();
+            let echoed = server_session.recv().await.unwrap();
+            assert_eq!(echoed, msg.as_bytes(), "classical echo {i}");
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_v2_pqc_xwing_mldsa65_full_e2e() {
+        // Full PQC pipeline: X-Wing + ML-DSA-65 + ChaCha20-Poly1305.
+        use crate::session_v2::SessionV2;
+        let (mut a, mut b) = duplex(2 * 1024 * 1024);
+        let client = make_identity_pqc(0x33);
+        let server = make_identity_pqc(0x44);
+
+        let client_task = tokio::spawn(async move {
+            let (_ack, keys) = perform_client_v2(&mut a, &client, AlgorithmSet::v0_2_pqc())
+                .await
+                .unwrap();
+            SessionV2::new(a, keys)
+        });
+        let server_task = tokio::spawn(async move {
+            let (_hello, keys) = perform_server_v2(&mut b, &server, AlgorithmSet::v0_2_pqc())
+                .await
+                .unwrap();
+            SessionV2::new(b, keys)
+        });
+
+        let (mut client_session, mut server_session) =
+            tokio::try_join!(client_task, server_task).unwrap();
+
+        for i in 0..50u32 {
+            let msg = format!("pqc ping #{i}");
+            client_session.send(msg.as_bytes()).await.unwrap();
+            let echoed = server_session.recv().await.unwrap();
+            assert_eq!(echoed, msg.as_bytes(), "pqc echo {i}");
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_v2_mlkem_ed25519_full_e2e() {
+        // Mixed pipeline: ML-KEM-768 + Ed25519 + ChaCha20-Poly1305.
+        use crate::session_v2::SessionV2;
+        let (mut a, mut b) = duplex(2 * 1024 * 1024);
+        let client = make_identity_mlkem(0x55);
+        let server = make_identity_mlkem(0x66);
+
+        let algo = AlgorithmSet {
+            kex: KexId::MlKem768,
+            sig: SigId::Ed25519,
+            cipher: tos_crypto::CipherId::ChaCha20Poly1305,
+        };
+
+        let client_task = tokio::spawn(async move {
+            let (_ack, keys) = perform_client_v2(&mut a, &client, algo).await.unwrap();
+            SessionV2::new(a, keys)
+        });
+        let server_task = tokio::spawn(async move {
+            let (_hello, keys) = perform_server_v2(&mut b, &server, algo).await.unwrap();
+            SessionV2::new(b, keys)
+        });
+
+        let (mut client_session, mut server_session) =
+            tokio::try_join!(client_task, server_task).unwrap();
+
+        for i in 0..50u32 {
+            let msg = format!("mlkem ping #{i}");
+            client_session.send(msg.as_bytes()).await.unwrap();
+            let echoed = server_session.recv().await.unwrap();
+            assert_eq!(echoed, msg.as_bytes(), "mlkem echo {i}");
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_v2_bidirectional_concurrent() {
+        // Both sides send and receive simultaneously, exercising the
+        // independent send/recv counters and nonce derivations.
+        use crate::session_v2::SessionV2;
+        let (mut a, mut b) = duplex(2 * 1024 * 1024);
+        let client = make_identity_classical(0x77);
+        let server = make_identity_classical(0x88);
+
+        let client_task = tokio::spawn(async move {
+            let (_ack, keys) =
+                perform_client_v2(&mut a, &client, AlgorithmSet::v0_2()).await.unwrap();
+            SessionV2::new(a, keys)
+        });
+        let server_task = tokio::spawn(async move {
+            let (_hello, keys) =
+                perform_server_v2(&mut b, &server, AlgorithmSet::v0_2()).await.unwrap();
+            SessionV2::new(b, keys)
+        });
+
+        let (mut client_session, mut server_session) =
+            tokio::try_join!(client_task, server_task).unwrap();
+
+        let client_send = tokio::spawn(async move {
+            for i in 0..30u32 {
+                let msg = format!("c->s #{i}");
+                client_session.send(msg.as_bytes()).await.unwrap();
+            }
+            client_session
+        });
+        let server_send = tokio::spawn(async move {
+            for i in 0..30u32 {
+                let msg = format!("s->c #{i}");
+                server_session.send(msg.as_bytes()).await.unwrap();
+            }
+            server_session
+        });
+
+        let (mut cs, mut ss) = tokio::try_join!(client_send, server_send).unwrap();
+
+        for i in 0..30u32 {
+            let expected = format!("s->c #{i}");
+            let got = cs.recv().await.unwrap();
+            assert_eq!(got, expected.as_bytes(), "client recv {i}");
+        }
+        for i in 0..30u32 {
+            let expected = format!("c->s #{i}");
+            let got = ss.recv().await.unwrap();
+            assert_eq!(got, expected.as_bytes(), "server recv {i}");
+        }
+    }
 }
