@@ -2,6 +2,7 @@ pub mod error;
 pub mod messages;
 pub mod messages_v2;
 pub mod handshake;
+pub mod handshake_v2;
 pub mod stream;
 pub mod transport;
 pub mod quic;

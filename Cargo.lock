@@ -3936,6 +3936,7 @@ dependencies = [
  "blake3",
  "ed25519-dalek",
  "futures",
+ "getrandom 0.4.2",
  "hex",
  "quinn",
  "rand 0.8.6",
